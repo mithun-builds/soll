@@ -1,0 +1,139 @@
+use std::sync::Arc;
+
+use anyhow::{anyhow, Result};
+use log::{info, warn};
+use parking_lot::Mutex;
+use tauri::AppHandle;
+use tokio::sync::Mutex as AsyncMutex;
+
+use crate::audio::AudioRecorder;
+use crate::cleanup::OllamaClient;
+use crate::model::ensure_model;
+use crate::paste::paste_text;
+use crate::transcribe::Transcriber;
+use crate::tray::{self, TrayState};
+
+pub struct AppState {
+    pub app: AppHandle,
+    recorder: Mutex<Option<AudioRecorder>>,
+    transcriber: AsyncMutex<Option<Arc<Transcriber>>>,
+    ollama: OllamaClient,
+    is_recording: Mutex<bool>,
+}
+
+impl AppState {
+    pub fn new(app: AppHandle) -> Self {
+        Self {
+            app,
+            recorder: Mutex::new(None),
+            transcriber: AsyncMutex::new(None),
+            ollama: OllamaClient::new(),
+            is_recording: Mutex::new(false),
+        }
+    }
+
+    fn set_tray(&self, state: TrayState) {
+        tray::set_state(&self.app, state);
+    }
+
+    /// Download the model (if needed), load whisper, compile Metal kernels,
+    /// and pre-warm Ollama — all in parallel where possible. Tray shows
+    /// Loading until this fully completes.
+    pub async fn warm_up(self: &Arc<Self>) -> Result<()> {
+        let t0 = std::time::Instant::now();
+        info!("warming up transcriber + cleanup…");
+
+        // Ollama warm-up runs concurrently — we don't block on it.
+        let me = self.clone();
+        tokio::spawn(async move {
+            me.ollama.warm_up().await;
+        });
+
+        let path = ensure_model(&self.app).await?;
+        info!("model ready ({:?}); loading whisper…", t0.elapsed());
+
+        // Load + warm on the blocking pool so we don't starve the runtime.
+        let t = tokio::task::spawn_blocking(move || -> Result<Transcriber> {
+            let t_load = std::time::Instant::now();
+            let t = Transcriber::load(&path)?;
+            info!("whisper loaded in {:?}; compiling Metal kernels…", t_load.elapsed());
+            let t_warm = std::time::Instant::now();
+            t.warm()?;
+            info!("Metal kernels compiled in {:?}", t_warm.elapsed());
+            Ok(t)
+        })
+        .await
+        .map_err(|e| anyhow!("join error: {e}"))??;
+
+        *self.transcriber.lock().await = Some(Arc::new(t));
+        info!("transcriber fully ready in {:?}", t0.elapsed());
+        self.set_tray(TrayState::Idle);
+        Ok(())
+    }
+
+    pub async fn on_press(self: Arc<Self>) -> Result<()> {
+        {
+            let mut rec = self.is_recording.lock();
+            if *rec {
+                return Ok(());
+            }
+            *rec = true;
+        }
+        self.set_tray(TrayState::Recording);
+        let recorder = AudioRecorder::start()?;
+        *self.recorder.lock() = Some(recorder);
+        Ok(())
+    }
+
+    pub async fn on_release(self: Arc<Self>) -> Result<()> {
+        {
+            let mut rec = self.is_recording.lock();
+            if !*rec {
+                return Ok(());
+            }
+            *rec = false;
+        }
+        let recorder = self.recorder.lock().take();
+        let samples = match recorder {
+            Some(r) => r.stop()?,
+            None => return Ok(()),
+        };
+        if samples.len() < 16_000 / 4 {
+            // Under 250ms — accidental tap.
+            self.set_tray(TrayState::Idle);
+            return Ok(());
+        }
+        self.set_tray(TrayState::Processing);
+
+        let transcriber = {
+            let guard = self.transcriber.lock().await;
+            guard.clone()
+        };
+        let transcriber = transcriber.ok_or_else(|| {
+            self.set_tray(TrayState::Idle);
+            anyhow!("transcriber not ready; still loading model")
+        })?;
+
+        let raw = tokio::task::spawn_blocking(move || transcriber.transcribe(&samples))
+            .await
+            .map_err(|e| anyhow!("transcribe join: {e}"))??;
+
+        let polished = match self.ollama.polish(&raw).await {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("cleanup failed, using raw transcript: {e:?}");
+                raw.clone()
+            }
+        };
+
+        let trimmed = polished.trim().to_string();
+        if trimmed.is_empty() {
+            self.set_tray(TrayState::Idle);
+            return Ok(());
+        }
+
+        paste_text(&trimmed)?;
+        self.set_tray(TrayState::Done);
+        Ok(())
+    }
+}

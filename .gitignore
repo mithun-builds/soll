@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.DS_Store
+.vscode/
+.idea/
+.claude/
+src-tauri/target/
+src-tauri/gen/
+src-tauri/WixTools/
+*.log
+.env
+.env.*
+!.env.example
+models/
+*.bin
+
