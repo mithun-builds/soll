@@ -13,28 +13,31 @@ const MODEL: &str = "llama3.2:3b";
 const LIVE_TIMEOUT: Duration = Duration::from_secs(4);
 const WARMUP_TIMEOUT: Duration = Duration::from_secs(90);
 
-/// Tight prompt — small models (3B) paraphrase if given any latitude.
-/// We explicitly forbid synonyms, additions, and rewording.
-const SYSTEM_PROMPT: &str = "You clean up voice transcription. Apply ONLY these rules:
-- Fix capitalization (sentence starts, names, places).
-- Fix punctuation (periods, commas, question marks).
-- Remove standalone filler tokens: \"um\", \"uh\", \"er\", \"hmm\".
-- Convert spelled-out times or quantities to digits (e.g. \"five pm\" -> \"5 pm\", \"twenty five\" -> \"25\").
+/// Tight prompt — no examples, because 3B models regurgitate example tokens
+/// verbatim (observed: a "five pm -> 5 pm" example poisoned outputs with
+/// literal "5 pm" in every response). Abstract rules only.
+const SYSTEM_PROMPT: &str = "You clean up voice transcription. Apply ONLY these operations:
+- Fix capitalization where needed (start of sentences, proper names).
+- Fix punctuation where needed (periods, commas, question marks).
+- Remove standalone filler tokens (\"um\", \"uh\", \"er\", \"hmm\") from the input.
 
-DO NOT paraphrase, rephrase, reword, or use synonyms.
-DO NOT add words that are not in the input.
-DO NOT remove content words (nouns, verbs, adjectives).
-DO NOT merge, split, or reorder sentences.
-If uncertain, output the input UNCHANGED.
+Hard rules:
+- Keep every content word from the input (nouns, verbs, adjectives, times, numbers).
+- Do not replace any word with a synonym.
+- Do not paraphrase or reword.
+- Do not add words that are not in the input.
+- Do not merge, split, or reorder sentences.
+- If you are uncertain about any change, output the input UNCHANGED.
 
-Return ONLY the cleaned text. No preface, no quotes, no explanation.";
+Return ONLY the cleaned text. No preface, no quotes, no explanation, no markdown.";
 
-/// Safety-net thresholds. The Jaccard word-similarity gates against
-/// hallucinations (model inventing words) and deletions (model dropping
-/// content). Length bounds catch runaway output. Tuned on the Day-1
-/// benchmark: rejects runs #3 (drops content) and #4 (hallucinates
-/// "coefficient"), accepts run #5 (minor word swaps).
+/// Safety-net thresholds. Two independent metrics must both pass:
+///   1. Jaccard word-similarity ≥ MIN_JACCARD — catches deletions & mass rewrites.
+///   2. New-word ratio ≤ MAX_NEW_RATIO — catches word-swap hallucinations
+///      that preserve overall token count (e.g. "tomorrow" → "5 pm").
+/// Length bounds catch empty/runaway outputs cheaply before the token math.
 const MIN_JACCARD: f32 = 0.65;
+const MAX_NEW_RATIO: f32 = 0.15;
 const MIN_LEN_RATIO: f32 = 0.60;
 const MAX_LEN_RATIO: f32 = 1.60;
 
@@ -233,9 +236,33 @@ fn is_safe_rewrite(raw: &str, polished: &str) -> (bool, String) {
             format!("jaccard={:.2} < {:.2} (len_ratio={:.2})", jaccard, MIN_JACCARD, len_ratio),
         );
     }
+
+    // Count tokens that appear in polished but not in raw. These are words
+    // the model invented. A tiny number are fine (punctuation quirks, recase);
+    // a large ratio means substantive paraphrasing we should reject.
+    let new_words: HashSet<_> = pol_words.difference(&raw_words).collect();
+    let new_ratio = if pol_words.is_empty() {
+        0.0
+    } else {
+        new_words.len() as f32 / pol_words.len() as f32
+    };
+    if new_ratio > MAX_NEW_RATIO {
+        let sample: Vec<_> = new_words.iter().take(5).collect();
+        return (
+            false,
+            format!(
+                "new_ratio={:.2} > {:.2} (invented: {sample:?}, jaccard={:.2})",
+                new_ratio, MAX_NEW_RATIO, jaccard
+            ),
+        );
+    }
+
     (
         true,
-        format!("jaccard={:.2}, len_ratio={:.2}", jaccard, len_ratio),
+        format!(
+            "jaccard={:.2}, new_ratio={:.2}, len_ratio={:.2}",
+            jaccard, new_ratio, len_ratio
+        ),
     )
 }
 
@@ -297,5 +324,49 @@ mod tests {
     fn rejects_empty_input() {
         let (ok, _) = is_safe_rewrite("", "anything");
         assert!(!ok);
+    }
+
+    #[test]
+    fn rejects_word_swap_hallucination() {
+        // Day-1 run #3 redux: "should"→"could", "tomorrow"→"5 pm".
+        // Either metric is allowed to fire; just require the overall reject.
+        let (ok, reason) = is_safe_rewrite(
+            "So, like I was thinking maybe we should ship it tomorrow.",
+            "So, like I was thinking maybe we could ship it 5 pm.",
+        );
+        assert!(!ok, "should reject word swap; got: {reason}");
+    }
+
+    #[test]
+    fn new_ratio_catches_swap_that_jaccard_misses() {
+        // Contrived case where Jaccard is high but new words are present.
+        // Raw: 10 tokens, polished: 10 tokens, 8 overlap, 2 new. Jaccard ≈ 0.67.
+        // new_ratio = 2/10 = 0.20 > 0.15 → rejected by the new-word gate.
+        let raw = "alpha beta gamma delta epsilon zeta eta theta iota kappa";
+        let polished =
+            "alpha beta gamma delta epsilon zeta eta theta SWAPPED REPLACED";
+        let (ok, reason) = is_safe_rewrite(raw, polished);
+        assert!(!ok, "new_ratio should fire; got: {reason}");
+        assert!(reason.contains("new_ratio"), "expected new_ratio; got: {reason}");
+    }
+
+    #[test]
+    fn rejects_prompt_regurgitation() {
+        // Day-1 run #2 redux: model spat back just "5 pm" ignoring the input.
+        let (ok, reason) = is_safe_rewrite(
+            "What's on my calendar for tomorrow morning?",
+            "5 pm",
+        );
+        assert!(!ok, "should reject prompt regurgitation; got: {reason}");
+    }
+
+    #[test]
+    fn accepts_filler_removal() {
+        // The legitimate case Ollama is supposed to handle.
+        let (ok, reason) = is_safe_rewrite(
+            "um so I was thinking we should ship it tomorrow",
+            "So I was thinking we should ship it tomorrow.",
+        );
+        assert!(ok, "should accept filler removal; got: {reason}");
     }
 }
