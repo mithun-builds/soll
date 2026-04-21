@@ -11,8 +11,9 @@ Everything runs on-device: [whisper.cpp](https://github.com/ggerganov/whisper.cp
 - [x] Local speech-to-text (whisper.cpp, Metal-accelerated on Apple Silicon)
 - [x] AI cleanup layer (Ollama `llama3.2:3b`) with graceful fallback to raw transcript
 - [x] Pastes into any focused app (Slack, Gmail, Notion, VS Code, Cursor, browser)
-- [x] Minimal floating pill UI (Listening / Polishing / Done)
+- [x] Menu-bar app with colored tray-icon status (loading / idle / recording / processing / done)
 - [x] Auto-downloads Whisper model on first run
+- [x] Pre-warms Metal kernels at startup so first dictation isn't slow
 - [ ] Personal dictionary (Day 4)
 - [ ] Auto-formatting (lists, emails) (Day 5)
 - [ ] Multi-language (Day 6)
@@ -31,7 +32,7 @@ Everything runs on-device: [whisper.cpp](https://github.com/ggerganov/whisper.cp
 
 ```bash
 # 1. Clone and enter
-git clone https://github.com/your-org/svara.git && cd svara
+git clone https://github.com/mithun-builds/svara.git && cd svara
 
 # 2. Install deps
 pnpm install
@@ -57,37 +58,51 @@ All three are **one-time** prompts. Svara never sends audio anywhere.
 
 ## Architecture
 
+Pure Rust. No webview. No Python. The menu-bar tray icon is the only UI —
+its color and blink rate signal current state. Pipeline is triggered by
+the global hotkey and runs entirely on-device (except for the optional
+local Ollama call on `127.0.0.1:11434`).
+
 ```
-┌────────────────── Svara ───────────────────┐
-│                                            │
-│  React pill UI ◀─── events ──── Rust core  │
-│  (Tauri webview)                 │         │
-│                                  ▼         │
-│                          ┌───────────────┐ │
-│                          │  hotkey (v2)  │ │
-│                          └───────┬───────┘ │
-│                                  ▼         │
-│                          ┌───────────────┐ │
-│                          │ cpal audio    │ │
-│                          │ 16 kHz mono   │ │
-│                          └───────┬───────┘ │
-│                                  ▼         │
-│                          ┌───────────────┐ │
-│                          │ whisper-rs    │ │
-│                          │ (Metal)       │ │
-│                          └───────┬───────┘ │
-│                                  ▼         │
-│                          ┌───────────────┐ │
-│                          │ Ollama HTTP   │──► 127.0.0.1:11434
-│                          │ (fallback ok) │  │
-│                          └───────┬───────┘ │
-│                                  ▼         │
-│                          ┌───────────────┐ │
-│                          │ clipboard +   │ │
-│                          │ osascript ⌘V  │ │
-│                          └───────────────┘ │
-│                                            │
-└────────────────────────────────────────────┘
+┌──────────────── Svara (menu-bar app) ────────────────┐
+│                                                      │
+│  Tray icon 🟡 ◀── state updates ── Rust core         │
+│  (NSStatusItem)                     │                │
+│                                     ▼                │
+│                             ┌───────────────┐        │
+│                             │  hotkey (v2)  │        │
+│                             │ ⌃⇧Space down  │        │
+│                             └───────┬───────┘        │
+│                                     ▼                │
+│                             ┌───────────────┐        │
+│                             │ cpal audio    │        │
+│                             │ 16 kHz mono   │        │
+│                             │ (own thread)  │        │
+│                             └───────┬───────┘        │
+│                                     ▼  on hotkey up  │
+│                             ┌───────────────┐        │
+│                             │ whisper-rs    │        │
+│                             │ (Metal)       │        │
+│                             └───────┬───────┘        │
+│                                     ▼                │
+│                             ┌───────────────┐        │
+│                             │ Ollama HTTP   │──► 127.0.0.1:11434
+│                             │ (fallback ok) │        │
+│                             └───────┬───────┘        │
+│                                     ▼                │
+│                             ┌───────────────┐        │
+│                             │ clipboard +   │        │
+│                             │ osascript ⌘V  │        │
+│                             └───────────────┘        │
+│                                                      │
+└──────────────────────────────────────────────────────┘
+
+Tray-icon state machine:
+  🔘 gray (slow pulse)  →  loading / warming Metal kernels
+  🟡 yellow (solid)     →  idle, ready to dictate
+  🔴 red (400ms pulse)  →  recording (hotkey held)
+  🟠 orange (400ms pulse) → polishing through Whisper + Ollama
+  🟢 green (~900ms)     →  pasted, reverts to yellow
 ```
 
 ## License
