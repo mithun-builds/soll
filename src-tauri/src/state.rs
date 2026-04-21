@@ -1,10 +1,14 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{anyhow, Result};
 use log::{info, warn};
 use parking_lot::Mutex;
 use tauri::AppHandle;
 use tokio::sync::Mutex as AsyncMutex;
+
+static DICTATION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 use crate::audio::AudioRecorder;
 use crate::cleanup::OllamaClient;
@@ -86,6 +90,7 @@ impl AppState {
     }
 
     pub async fn on_release(self: Arc<Self>) -> Result<()> {
+        let t_release = Instant::now();
         {
             let mut rec = self.is_recording.lock();
             if !*rec {
@@ -93,13 +98,18 @@ impl AppState {
             }
             *rec = false;
         }
+        let n = DICTATION_COUNTER.fetch_add(1, Ordering::SeqCst) + 1;
+
         let recorder = self.recorder.lock().take();
         let samples = match recorder {
             Some(r) => r.stop()?,
             None => return Ok(()),
         };
+        let audio_ms = (samples.len() as f64 / 16_000.0 * 1000.0) as u64;
+
         if samples.len() < 16_000 / 4 {
             // Under 250ms — accidental tap.
+            info!("[latency #{n}] audio={audio_ms}ms — skipped (tap too short)");
             self.set_tray(TrayState::Idle);
             return Ok(());
         }
@@ -114,25 +124,43 @@ impl AppState {
             anyhow!("transcriber not ready; still loading model")
         })?;
 
+        let t_whisper_start = Instant::now();
         let raw = tokio::task::spawn_blocking(move || transcriber.transcribe(&samples))
             .await
             .map_err(|e| anyhow!("transcribe join: {e}"))??;
+        let whisper_ms = t_whisper_start.elapsed().as_millis() as u64;
 
-        let polished = match self.ollama.polish(&raw).await {
-            Ok(p) => p,
+        let t_ollama_start = Instant::now();
+        let (polished, ollama_ms, ollama_used) = match self.ollama.polish(&raw).await {
+            Ok(p) => {
+                let ms = t_ollama_start.elapsed().as_millis() as u64;
+                (p, ms, true)
+            }
             Err(e) => {
-                warn!("cleanup failed, using raw transcript: {e:?}");
-                raw.clone()
+                let ms = t_ollama_start.elapsed().as_millis() as u64;
+                warn!("[latency #{n}] cleanup skipped ({e:?}), using raw transcript");
+                (raw.clone(), ms, false)
             }
         };
 
         let trimmed = polished.trim().to_string();
         if trimmed.is_empty() {
+            info!("[latency #{n}] audio={audio_ms}ms whisper={whisper_ms}ms — empty transcript");
             self.set_tray(TrayState::Idle);
             return Ok(());
         }
 
+        let t_paste_start = Instant::now();
         paste_text(&trimmed)?;
+        let paste_ms = t_paste_start.elapsed().as_millis() as u64;
+        let total_ms = t_release.elapsed().as_millis() as u64;
+        let char_count = trimmed.chars().count();
+        let ollama_tag = if ollama_used { "ollama" } else { "ollama-skipped" };
+
+        info!(
+            "[latency #{n}] audio={audio_ms}ms whisper={whisper_ms}ms {ollama_tag}={ollama_ms}ms paste={paste_ms}ms total={total_ms}ms chars={char_count} text={trimmed:?}"
+        );
+
         self.set_tray(TrayState::Done);
         Ok(())
     }
