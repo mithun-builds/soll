@@ -265,6 +265,19 @@ body,
   animation: legend-pulse 0.45s ease-in-out infinite;
 }
 
+.example-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12.5px;
+  padding-left: 4px;
+}
+.example-list em {
+  color: var(--fg);
+  font-style: normal;
+}
+
 @keyframes legend-pulse {
   0%,
   100% {
