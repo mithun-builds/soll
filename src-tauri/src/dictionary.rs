@@ -8,6 +8,7 @@
 
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
+use regex::Regex;
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use std::path::Path;
@@ -138,6 +139,63 @@ impl Dictionary {
     }
 }
 
+/// Deterministic post-processor: rewrite occurrences of dictionary terms
+/// (in any casing, with or without spaces/hyphens at camelCase boundaries)
+/// to the canonical form stored in the dictionary.
+///
+/// Example: term "HomeLane" matches "HomeLane", "homelane", "HOMELANE",
+/// "Home Lane", "home lane", "Home-Lane". All become "HomeLane".
+///
+/// Word-boundary anchored (`\b`) so "homelane" inside "homelaner" is left
+/// alone. Idempotent — running twice produces the same output.
+pub fn apply_to_text(text: &str, terms: &[String]) -> String {
+    let mut out = text.to_string();
+    for term in terms {
+        let canonical = term.trim();
+        if canonical.is_empty() {
+            continue;
+        }
+        out = apply_one_term(&out, canonical);
+    }
+    out
+}
+
+fn apply_one_term(text: &str, canonical: &str) -> String {
+    let variants = variants_of(canonical);
+    let escaped: Vec<String> = variants.iter().map(|v| regex::escape(v)).collect();
+    let pattern = format!(r"(?i)\b(?:{})\b", escaped.join("|"));
+    match Regex::new(&pattern) {
+        Ok(re) => re.replace_all(text, canonical).to_string(),
+        Err(_) => text.to_string(),
+    }
+}
+
+/// Generate surface forms Whisper is likely to emit for a given canonical
+/// term. For "HomeLane" that's ["HomeLane", "Home Lane", "Home-Lane"].
+/// The `(?i)` flag in the regex handles lowercase/uppercase variation,
+/// so we only enumerate the *shape* variants here.
+fn variants_of(canonical: &str) -> Vec<String> {
+    let mut v = vec![canonical.to_string()];
+    let spaced = split_camel_case(canonical);
+    if spaced != canonical {
+        v.push(spaced.clone());
+        v.push(spaced.replace(' ', "-"));
+    }
+    v
+}
+
+fn split_camel_case(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    let chars: Vec<char> = s.chars().collect();
+    for (i, &c) in chars.iter().enumerate() {
+        if i > 0 && c.is_uppercase() && chars[i - 1].is_lowercase() {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,5 +248,79 @@ mod tests {
         d.add("Beta", 5).unwrap();
         let p = d.whisper_prompt().unwrap().unwrap();
         assert_eq!(p, "Alpha, Beta");
+    }
+
+    // === apply_to_text tests ===
+
+    fn apply(text: &str, terms: &[&str]) -> String {
+        let owned: Vec<String> = terms.iter().map(|s| s.to_string()).collect();
+        apply_to_text(text, &owned)
+    }
+
+    #[test]
+    fn rewrites_simple_case_difference() {
+        assert_eq!(
+            apply("i spoke with vrishti today.", &["Vrishti"]),
+            "i spoke with Vrishti today."
+        );
+    }
+
+    #[test]
+    fn rewrites_split_camelcase_term() {
+        // The failing HomeLane case: Whisper emits two lowercase words,
+        // post-processor must rejoin into the canonical spelling.
+        assert_eq!(
+            apply("home lane is shipping tomorrow.", &["HomeLane"]),
+            "HomeLane is shipping tomorrow."
+        );
+    }
+
+    #[test]
+    fn rewrites_hyphenated_variant() {
+        assert_eq!(
+            apply("the Home-Lane team met.", &["HomeLane"]),
+            "the HomeLane team met."
+        );
+    }
+
+    #[test]
+    fn rewrites_lowercase_joined_variant() {
+        assert_eq!(
+            apply("homelane shipped.", &["HomeLane"]),
+            "HomeLane shipped."
+        );
+    }
+
+    #[test]
+    fn respects_word_boundaries() {
+        // "homelaner" should NOT be rewritten to "HomeLaner"
+        assert_eq!(
+            apply("she's a homelaner through and through.", &["HomeLane"]),
+            "she's a homelaner through and through."
+        );
+    }
+
+    #[test]
+    fn is_idempotent() {
+        let once = apply("home lane home lane", &["HomeLane"]);
+        let twice = apply(&once, &["HomeLane"]);
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn applies_multiple_terms() {
+        let out = apply(
+            "home lane is using growthbook with vrishti.",
+            &["HomeLane", "GrowthBook", "Vrishti"],
+        );
+        assert_eq!(out, "HomeLane is using GrowthBook with Vrishti.");
+    }
+
+    #[test]
+    fn leaves_unrelated_text_alone() {
+        assert_eq!(
+            apply("nothing here matches", &["HomeLane", "Vrishti"]),
+            "nothing here matches"
+        );
     }
 }

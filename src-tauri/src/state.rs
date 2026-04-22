@@ -168,7 +168,12 @@ impl AppState {
             }
         };
 
-        let trimmed = polished.trim().to_string();
+        // Deterministic dictionary post-processor: rewrites "home lane" ->
+        // "HomeLane", "homelane" -> "HomeLane" etc. Runs AFTER Ollama because
+        // Whisper + LLM cleanup often split unusual casings unpredictably;
+        // only a regex-based fix gets it right every time.
+        let with_dict = crate::dictionary::apply_to_text(&polished, &preserve_terms);
+        let trimmed = with_dict.trim().to_string();
         if trimmed.is_empty() {
             info!("[latency #{n}] audio={audio_ms}ms whisper={whisper_ms}ms — empty transcript");
             self.set_tray(TrayState::Idle);
