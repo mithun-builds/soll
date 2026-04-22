@@ -87,6 +87,29 @@ export function LegendApp() {
         ))}
       </div>
 
+      <section className="legend-triggers">
+        <h2>List triggers</h2>
+        <p className="subtle">
+          Say one of these phrases before your items to auto-format as a list.
+          No trigger = plain paragraph.
+        </p>
+        <ul>
+          <li>
+            <code>bullet list …</code>
+            <span> — bullets (- item)</span>
+          </li>
+          <li>
+            <code>ordinal list …</code> <span className="muted">or</span>{" "}
+            <code>numbered list …</code>
+            <span> — numbered (1. 2. 3.)</span>
+          </li>
+        </ul>
+        <p className="subtle example">
+          Example: <em>"ordinal list coffee, tea, water"</em> →{" "}
+          <code>1. Coffee, 2. Tea, 3. Water</code>
+        </p>
+      </section>
+
       <footer className="legend-footer subtle">
         Hold ⌃⇧Space anywhere to dictate into the focused app.
       </footer>
