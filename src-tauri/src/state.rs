@@ -11,6 +11,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::audio::AudioRecorder;
 use crate::cleanup::OllamaClient;
 use crate::dictionary::Dictionary;
+use crate::formatter::{self, Format};
 use crate::model::ensure_model;
 use crate::paste::paste_text;
 use crate::transcribe::Transcriber;
@@ -159,24 +160,34 @@ impl AppState {
         .map_err(|e| anyhow!("transcribe join: {e}"))??;
         let whisper_ms = t_whisper_start.elapsed().as_millis() as u64;
 
-        let t_ollama_start = Instant::now();
         let preserve_terms: Vec<String> = dict_words.into_iter().map(|e| e.word).collect();
-        let (polished, ollama_ms, ollama_used) = match self.ollama.polish_with_terms(&raw, &preserve_terms).await {
-            Ok(p) => {
-                let ms = t_ollama_start.elapsed().as_millis() as u64;
-                (p, ms, true)
-            }
-            Err(e) => {
-                let ms = t_ollama_start.elapsed().as_millis() as u64;
-                warn!("[latency #{n}] cleanup skipped ({e:?}), using raw transcript");
-                (raw.clone(), ms, false)
+
+        // Auto-formatting: if the raw transcript looks like a numbered or
+        // bullet list, format it deterministically and skip Ollama entirely.
+        // An LLM always turns structured lists back into prose; a regex never.
+        let format = formatter::detect(&raw);
+        let t_ollama_start = Instant::now();
+        let (polished, ollama_ms, ollama_used) = match format {
+            Format::Plain => match self.ollama.polish_with_terms(&raw, &preserve_terms).await {
+                Ok(p) => {
+                    let ms = t_ollama_start.elapsed().as_millis() as u64;
+                    (p, ms, true)
+                }
+                Err(e) => {
+                    let ms = t_ollama_start.elapsed().as_millis() as u64;
+                    warn!("[latency #{n}] cleanup skipped ({e:?}), using raw transcript");
+                    (raw.clone(), ms, false)
+                }
+            },
+            Format::Bullets | Format::Numbered => {
+                info!("[latency #{n}] format detected: {:?} (skipping ollama)", format);
+                (formatter::apply(&raw, format), 0, false)
             }
         };
 
         // Deterministic dictionary post-processor: rewrites "home lane" ->
-        // "HomeLane", "homelane" -> "HomeLane" etc. Runs AFTER Ollama because
-        // Whisper + LLM cleanup often split unusual casings unpredictably;
-        // only a regex-based fix gets it right every time.
+        // "HomeLane", "homelane" -> "HomeLane" etc. Runs AFTER cleanup (or
+        // formatter) because both can split/re-wrap casings unpredictably.
         let with_dict = crate::dictionary::apply_to_text(&polished, &preserve_terms);
         let trimmed = with_dict.trim().to_string();
         if trimmed.is_empty() {
