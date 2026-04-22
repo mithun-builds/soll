@@ -31,6 +31,9 @@ hound = "3.5"
 # Personal dictionary storage
 rusqlite = { version = "0.31", features = ["bundled"] }
 
+# Dictionary post-processor — case-insensitive word-boundary substitution
+regex = "1"
+
 # Speech-to-text (whisper.cpp bindings, Metal-accelerated on macOS)
 whisper-rs = { version = "0.11", features = ["metal"] }
 
