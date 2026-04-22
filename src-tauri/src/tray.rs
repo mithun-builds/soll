@@ -1,16 +1,17 @@
 use anyhow::Result;
-use once_cell::sync::Lazy;
+use once_cell::sync::{Lazy, OnceCell};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Manager, WebviewUrl, WebviewWindowBuilder,
+    AppHandle, Manager, Wry, WebviewUrl, WebviewWindowBuilder,
 };
 
 const TRAY_ID: &str = "svara-tray";
 const BLINK_MS: u64 = 400;
+const INIT_BLINK_MS: u64 = 180; // fast pulse — must visibly differ from Loading
 const LOADING_BLINK_MS: u64 = 800;
 const DONE_REVERT_MS: u64 = 900;
 
@@ -18,6 +19,10 @@ static IMG_LOADING: Lazy<Image<'static>> =
     Lazy::new(|| Image::from_bytes(include_bytes!("../icons/tray_loading.png")).unwrap());
 static IMG_LOADING_DIM: Lazy<Image<'static>> =
     Lazy::new(|| Image::from_bytes(include_bytes!("../icons/tray_loading_dim.png")).unwrap());
+static IMG_BLUE: Lazy<Image<'static>> =
+    Lazy::new(|| Image::from_bytes(include_bytes!("../icons/tray_blue.png")).unwrap());
+static IMG_BLUE_DIM: Lazy<Image<'static>> =
+    Lazy::new(|| Image::from_bytes(include_bytes!("../icons/tray_blue_dim.png")).unwrap());
 static IMG_YELLOW: Lazy<Image<'static>> =
     Lazy::new(|| Image::from_bytes(include_bytes!("../icons/tray_yellow.png")).unwrap());
 static IMG_RED: Lazy<Image<'static>> =
@@ -33,18 +38,60 @@ static IMG_GREEN: Lazy<Image<'static>> =
 
 static EPOCH: AtomicU64 = AtomicU64::new(0);
 
+/// Reference to the first (non-interactive) menu item, which we rewrite
+/// every state change so users reading the menu see the live status.
+static STATUS_ITEM: OnceCell<MenuItem<Wry>> = OnceCell::new();
+
 #[derive(Copy, Clone, Debug)]
 pub enum TrayState {
+    /// App is still booting (downloading/loading model, compiling Metal kernels).
     Loading,
+    /// Ready for the next dictation. The resting state.
     Idle,
-    Recording,
+    /// Hotkey pressed; mic is warming up. User should wait for next state.
+    Initializing,
+    /// Mic is live and capturing. User should be speaking now.
+    Transcribing,
+    /// Hotkey released; running whisper + optional AI cleanup.
     Processing,
-    Done,
+    /// Text just pasted. Brief green flash then reverts to Idle.
+    Transcribed,
+}
+
+impl TrayState {
+    fn status_text(&self) -> &'static str {
+        match self {
+            TrayState::Loading => "Loading…",
+            TrayState::Idle => "Idle — hold ⌃⇧Space to dictate",
+            TrayState::Initializing => "Initializing…",
+            TrayState::Transcribing => "Transcribing — speak now",
+            TrayState::Processing => "Processing…",
+            TrayState::Transcribed => "Transcribed ✓",
+        }
+    }
+
+    fn tooltip(&self) -> &'static str {
+        match self {
+            TrayState::Loading => "Svara — loading",
+            TrayState::Idle => "Svara — hold ⌃⇧Space",
+            TrayState::Initializing => "Svara — initializing…",
+            TrayState::Transcribing => "Svara — speak now",
+            TrayState::Processing => "Svara — processing",
+            TrayState::Transcribed => "Svara — transcribed ✓",
+        }
+    }
 }
 
 pub fn build_tray(app: &AppHandle) -> Result<()> {
-    let status_item =
-        MenuItem::with_id(app, "status", "Svara — starting…", false, None::<&str>)?;
+    let status_item = MenuItem::with_id(
+        app,
+        "status",
+        TrayState::Loading.status_text(),
+        false,
+        None::<&str>,
+    )?;
+    let _ = STATUS_ITEM.set(status_item.clone());
+
     let hotkey_item = MenuItem::with_id(
         app,
         "hotkey_info",
@@ -64,7 +111,7 @@ pub fn build_tray(app: &AppHandle) -> Result<()> {
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(IMG_LOADING.clone())
         .icon_as_template(false)
-        .tooltip("Svara — starting…")
+        .tooltip(TrayState::Loading.tooltip())
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -78,7 +125,6 @@ pub fn build_tray(app: &AppHandle) -> Result<()> {
     Ok(())
 }
 
-/// Open (or focus, if already open) the dictionary CRUD window.
 pub fn open_dictionary_window(app: &AppHandle) {
     const LABEL: &str = "dictionary";
     if let Some(existing) = app.get_webview_window(LABEL) {
@@ -101,15 +147,12 @@ pub fn open_dictionary_window(app: &AppHandle) {
 
 pub fn set_state(app: &AppHandle, state: TrayState) {
     let my_epoch = EPOCH.fetch_add(1, Ordering::SeqCst) + 1;
-    let tooltip = match state {
-        TrayState::Loading => "Svara — loading model…",
-        TrayState::Idle => "Svara — hold ⌃⇧Space",
-        TrayState::Recording => "Svara — listening",
-        TrayState::Processing => "Svara — polishing",
-        TrayState::Done => "Svara — pasted",
-    };
+
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        let _ = tray.set_tooltip(Some(tooltip));
+        let _ = tray.set_tooltip(Some(state.tooltip()));
+    }
+    if let Some(item) = STATUS_ITEM.get() {
+        let _ = item.set_text(state.status_text());
     }
 
     match state {
@@ -124,7 +167,17 @@ pub fn set_state(app: &AppHandle, state: TrayState) {
             );
         }
         TrayState::Idle => set_icon(app, IMG_YELLOW.clone()),
-        TrayState::Recording => {
+        TrayState::Initializing => {
+            set_icon(app, IMG_BLUE.clone());
+            start_blink(
+                app.clone(),
+                my_epoch,
+                IMG_BLUE.clone(),
+                IMG_BLUE_DIM.clone(),
+                INIT_BLINK_MS,
+            );
+        }
+        TrayState::Transcribing => {
             set_icon(app, IMG_RED.clone());
             start_blink(
                 app.clone(),
@@ -144,7 +197,7 @@ pub fn set_state(app: &AppHandle, state: TrayState) {
                 BLINK_MS,
             );
         }
-        TrayState::Done => {
+        TrayState::Transcribed => {
             set_icon(app, IMG_GREEN.clone());
             schedule_revert(app.clone(), my_epoch);
         }
@@ -186,5 +239,11 @@ fn schedule_revert(app: AppHandle, epoch: u64) {
         }
         EPOCH.fetch_add(1, Ordering::SeqCst);
         set_icon(&app, IMG_YELLOW.clone());
+        if let Some(item) = STATUS_ITEM.get() {
+            let _ = item.set_text(TrayState::Idle.status_text());
+        }
+        if let Some(tray) = app.tray_by_id(TRAY_ID) {
+            let _ = tray.set_tooltip(Some(TrayState::Idle.tooltip()));
+        }
     });
 }
