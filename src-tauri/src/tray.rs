@@ -1,13 +1,17 @@
 use anyhow::Result;
 use once_cell::sync::{Lazy, OnceCell};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tauri::{
     image::Image,
-    menu::{Menu, MenuItem, PredefinedMenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu, SubmenuBuilder},
     tray::TrayIconBuilder,
-    AppHandle, Manager, Wry, WebviewUrl, WebviewWindowBuilder,
+    AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, Wry,
 };
+
+use crate::model::WhisperModel;
+use crate::state::AppState;
 
 const TRAY_ID: &str = "svara-tray";
 /// Every "working" state (Loading / Initializing / Processing) uses the same
@@ -36,6 +40,18 @@ static EPOCH: AtomicU64 = AtomicU64::new(0);
 /// Reference to the first (non-interactive) menu item, which we rewrite
 /// every state change so users reading the menu see the live status.
 static STATUS_ITEM: OnceCell<MenuItem<Wry>> = OnceCell::new();
+
+/// Checkmarked items for the model submenu; we toggle their checked state
+/// whenever `update_model_check(...)` is called.
+static MODEL_ITEMS: OnceCell<Vec<(WhisperModel, CheckMenuItem<Wry>)>> = OnceCell::new();
+
+fn menu_id_for_model(m: WhisperModel) -> String {
+    format!("model.{}", m.id())
+}
+
+fn model_from_menu_id(id: &str) -> Option<WhisperModel> {
+    id.strip_prefix("model.").and_then(WhisperModel::from_id)
+}
 
 #[derive(Copy, Clone, Debug)]
 pub enum TrayState {
@@ -88,6 +104,8 @@ pub fn build_tray(app: &AppHandle) -> Result<()> {
     let _ = STATUS_ITEM.set(status_item.clone());
     let initial_icon = IMG_BLUE.clone();
 
+    let model_submenu = build_model_submenu(app)?;
+
     let hotkey_item = MenuItem::with_id(
         app,
         "hotkey_info",
@@ -108,6 +126,7 @@ pub fn build_tray(app: &AppHandle) -> Result<()> {
             &sep,
             &dictionary,
             &legend,
+            &model_submenu,
             &sep,
             &quit,
         ],
@@ -119,11 +138,18 @@ pub fn build_tray(app: &AppHandle) -> Result<()> {
         .tooltip(TrayState::Loading.tooltip())
         .menu(&menu)
         .show_menu_on_left_click(true)
-        .on_menu_event(|app, event| match event.id.as_ref() {
-            "quit" => app.exit(0),
-            "dictionary" => open_dictionary_window(app),
-            "legend" => open_legend_window(app),
-            _ => {}
+        .on_menu_event(|app, event| {
+            let id = event.id.as_ref();
+            match id {
+                "quit" => app.exit(0),
+                "dictionary" => open_dictionary_window(app),
+                "legend" => open_legend_window(app),
+                other => {
+                    if let Some(model) = model_from_menu_id(other) {
+                        handle_model_pick(app, model);
+                    }
+                }
+            }
         })
         .build(app)?;
 
@@ -149,6 +175,63 @@ pub fn open_dictionary_window(app: &AppHandle) {
         Ok(_) => log::info!("opened dictionary window"),
         Err(e) => log::error!("open dictionary window: {e:?}"),
     }
+}
+
+/// Build the "Whisper model" submenu with a CheckMenuItem per model.
+/// The currently-active model is marked checked on every state change.
+fn build_model_submenu(app: &AppHandle) -> Result<Submenu<Wry>> {
+    let state = app.try_state::<Arc<AppState>>();
+    let current = state
+        .map(|s| s.inner().current_model())
+        .unwrap_or(WhisperModel::DEFAULT);
+
+    let mut pairs: Vec<(WhisperModel, CheckMenuItem<Wry>)> = Vec::new();
+    let mut builder = SubmenuBuilder::new(app, "Whisper model");
+    for &m in WhisperModel::ALL {
+        let item = CheckMenuItem::with_id(
+            app,
+            menu_id_for_model(m),
+            m.display_name(),
+            true,
+            m == current,
+            None::<&str>,
+        )?;
+        builder = builder.item(&item);
+        pairs.push((m, item));
+    }
+    let submenu = builder.build()?;
+    let _ = MODEL_ITEMS.set(pairs);
+    Ok(submenu)
+}
+
+/// Update the submenu's checkmarks to reflect `current`.
+pub fn update_model_check(current: WhisperModel) {
+    if let Some(pairs) = MODEL_ITEMS.get() {
+        for (m, item) in pairs {
+            let _ = item.set_checked(*m == current);
+        }
+    }
+}
+
+fn handle_model_pick(app: &AppHandle, model: WhisperModel) {
+    let state = match app.try_state::<Arc<AppState>>() {
+        Some(s) => s.inner().clone(),
+        None => return,
+    };
+    if state.current_model() == model {
+        // Clicking the already-active model is a no-op, but re-checkmark in
+        // case the OS cleared the checked state on the click.
+        update_model_check(model);
+        return;
+    }
+    log::info!("tray: user picked {}", model.id());
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = state.clone().switch_model(model).await {
+            log::error!("switch_model({}) failed: {e:?}", model.id());
+        } else {
+            update_model_check(model);
+        }
+    });
 }
 
 pub fn open_legend_window(app: &AppHandle) {

@@ -28,6 +28,11 @@ use svara_lib::metal::ensure_metal_resources;
 use svara_lib::model::default_model_path_standalone;
 use svara_lib::transcribe::Transcriber;
 
+// NOTE: the bench deliberately uses the standalone path resolver (base.en)
+// rather than the AppHandle-based per-model downloader used by the live
+// app, so benches run fully offline once any model has been downloaded
+// once by the app. Override with --model to benchmark other sizes.
+
 #[derive(Debug)]
 struct Args {
     wav: PathBuf,
