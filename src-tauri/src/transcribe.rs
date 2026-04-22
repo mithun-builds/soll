@@ -27,7 +27,19 @@ impl Transcriber {
         Ok(())
     }
 
+    /// Simple transcribe with no initial prompt. Kept for the benchmark harness.
     pub fn transcribe(&self, samples: &[f32]) -> Result<String> {
+        self.transcribe_with_prompt(samples, None)
+    }
+
+    /// Transcribe with an optional `initial_prompt` that biases Whisper's
+    /// decoding toward specific vocabulary. Pass a short comma-separated
+    /// list of names/jargon (≤224 tokens). Useful for personal dictionary.
+    pub fn transcribe_with_prompt(
+        &self,
+        samples: &[f32],
+        initial_prompt: Option<&str>,
+    ) -> Result<String> {
         let mut state = self.ctx.create_state().context("create whisper state")?;
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         params.set_n_threads(num_threads());
@@ -39,6 +51,11 @@ impl Transcriber {
         params.set_print_timestamps(false);
         params.set_suppress_blank(true);
         params.set_single_segment(false);
+        if let Some(prompt) = initial_prompt {
+            if !prompt.trim().is_empty() {
+                params.set_initial_prompt(prompt);
+            }
+        }
 
         state.full(params, samples).context("whisper full")?;
         let n = state.full_n_segments().context("segment count")?;

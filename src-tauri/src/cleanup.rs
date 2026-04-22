@@ -144,6 +144,13 @@ impl OllamaClient {
     }
 
     pub async fn polish(&self, raw: &str) -> Result<String> {
+        self.polish_with_terms(raw, &[]).await
+    }
+
+    /// Polish with an optional list of "preserve exactly" terms injected
+    /// into the system prompt. Used by the personal dictionary to keep
+    /// names/jargon intact through cleanup.
+    pub async fn polish_with_terms(&self, raw: &str, preserve_terms: &[String]) -> Result<String> {
         if raw.trim().is_empty() {
             return Ok(String::new());
         }
@@ -157,8 +164,9 @@ impl OllamaClient {
             CleanupState::Ready => {}
         }
 
+        let preserve_clause = build_preserve_clause(preserve_terms);
         let prompt = format!(
-            "{SYSTEM_PROMPT}\n\n--- INPUT ---\n{raw}\n--- CLEANED ---\n"
+            "{SYSTEM_PROMPT}{preserve_clause}\n\n--- INPUT ---\n{raw}\n--- CLEANED ---\n"
         );
         let body = GenReq {
             model: MODEL,
@@ -198,6 +206,25 @@ impl OllamaClient {
             }
         }
     }
+}
+
+/// Builds a "preserve these exact terms" clause appended to the base prompt,
+/// or empty string if no terms are given.
+fn build_preserve_clause(terms: &[String]) -> String {
+    let meaningful: Vec<&str> = terms
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if meaningful.is_empty() {
+        return String::new();
+    }
+    // Cap at 50 terms to keep the system prompt bounded.
+    let capped = &meaningful[..meaningful.len().min(50)];
+    format!(
+        "\n\nPreserve these terms EXACTLY character-for-character (they are proper names or specific jargon the user uses): {}.",
+        capped.join(", ")
+    )
 }
 
 /// Decide whether a model rewrite is safe to paste. Returns (accepted, reason).

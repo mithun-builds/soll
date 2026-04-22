@@ -5,20 +5,22 @@ use std::time::Instant;
 use anyhow::{anyhow, Result};
 use log::{info, warn};
 use parking_lot::Mutex;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex as AsyncMutex;
-
-static DICTATION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 use crate::audio::AudioRecorder;
 use crate::cleanup::OllamaClient;
+use crate::dictionary::Dictionary;
 use crate::model::ensure_model;
 use crate::paste::paste_text;
 use crate::transcribe::Transcriber;
 use crate::tray::{self, TrayState};
 
+static DICTATION_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 pub struct AppState {
     pub app: AppHandle,
+    pub dictionary: Arc<Dictionary>,
     recorder: Mutex<Option<AudioRecorder>>,
     transcriber: AsyncMutex<Option<Arc<Transcriber>>>,
     ollama: OllamaClient,
@@ -27,8 +29,23 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(app: AppHandle) -> Self {
+        let dict = match app.path().app_data_dir() {
+            Ok(dir) => {
+                let db = dir.join("dict.db");
+                match Dictionary::open(&db) {
+                    Ok(d) => Arc::new(d),
+                    Err(e) => {
+                        log::error!("dictionary open failed at {}: {e:?}", db.display());
+                        panic!("cannot open dictionary db: {e:?}");
+                    }
+                }
+            }
+            Err(e) => panic!("no app_data_dir for dictionary: {e:?}"),
+        };
+
         Self {
             app,
+            dictionary: dict,
             recorder: Mutex::new(None),
             transcriber: AsyncMutex::new(None),
             ollama: OllamaClient::new(),
@@ -124,14 +141,22 @@ impl AppState {
             anyhow!("transcriber not ready; still loading model")
         })?;
 
+        // Build whisper initial_prompt from the user's personal dictionary.
+        let whisper_prompt = self.dictionary.whisper_prompt().unwrap_or(None);
+        let dict_words = self.dictionary.list().unwrap_or_default();
+
         let t_whisper_start = Instant::now();
-        let raw = tokio::task::spawn_blocking(move || transcriber.transcribe(&samples))
-            .await
-            .map_err(|e| anyhow!("transcribe join: {e}"))??;
+        let prompt_clone = whisper_prompt.clone();
+        let raw = tokio::task::spawn_blocking(move || {
+            transcriber.transcribe_with_prompt(&samples, prompt_clone.as_deref())
+        })
+        .await
+        .map_err(|e| anyhow!("transcribe join: {e}"))??;
         let whisper_ms = t_whisper_start.elapsed().as_millis() as u64;
 
         let t_ollama_start = Instant::now();
-        let (polished, ollama_ms, ollama_used) = match self.ollama.polish(&raw).await {
+        let preserve_terms: Vec<String> = dict_words.into_iter().map(|e| e.word).collect();
+        let (polished, ollama_ms, ollama_used) = match self.ollama.polish_with_terms(&raw, &preserve_terms).await {
             Ok(p) => {
                 let ms = t_ollama_start.elapsed().as_millis() as u64;
                 (p, ms, true)
