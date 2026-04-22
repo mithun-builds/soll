@@ -10,6 +10,7 @@ mod tray;
 // must run the same code paths production does.
 pub mod cleanup;
 pub mod dictionary;
+pub mod formatter;
 pub mod metal;
 pub mod model;
 pub mod transcribe;
