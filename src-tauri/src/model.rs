@@ -63,3 +63,12 @@ fn model_dir(app: &AppHandle) -> Result<PathBuf> {
         .context("app data dir")?;
     Ok(base.join("models"))
 }
+
+/// Resolve the default model path WITHOUT an AppHandle — used by the
+/// benchmark binary and other offline tools. On macOS this matches what
+/// Tauri's `app_data_dir()` returns for identifier `com.svara.app`:
+///   ~/Library/Application Support/com.svara.app/models/ggml-base.en.bin
+pub fn default_model_path_standalone() -> Option<PathBuf> {
+    let data_dir = dirs::data_dir()?;
+    Some(data_dir.join("com.svara.app").join("models").join(MODEL_FILE))
+}

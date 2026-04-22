@@ -1,11 +1,16 @@
 mod audio;
-mod cleanup;
-mod model;
 mod paste;
 mod pipeline;
 mod state;
-mod transcribe;
 mod tray;
+
+// Exposed for the benchmark harness (`examples/bench_pipeline.rs`).
+// Everything under these modules is re-entered by the bench, so it
+// must run the same code paths production does.
+pub mod cleanup;
+pub mod metal;
+pub mod model;
+pub mod transcribe;
 
 use std::sync::Arc;
 
@@ -23,6 +28,9 @@ fn push_to_talk_shortcut() -> Shortcut {
 }
 
 pub fn run() {
+    // Must happen before whisper-rs spins up its Metal context.
+    metal::ensure_metal_resources();
+
     let ptt = push_to_talk_shortcut();
     let ptt_for_handler = ptt.clone();
 

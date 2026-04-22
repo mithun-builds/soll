@@ -1,0 +1,11 @@
+{"type":"iteration","i":0,"audio_ms":3000,"whisper_ms":247,"ollama_ms":null,"ollama_used":false,"text":"you"}
+{"type":"iteration","i":1,"audio_ms":3000,"whisper_ms":236,"ollama_ms":null,"ollama_used":false,"text":"you"}
+{"type":"iteration","i":2,"audio_ms":3000,"whisper_ms":234,"ollama_ms":null,"ollama_used":false,"text":"you"}
+{"type":"iteration","i":3,"audio_ms":3000,"whisper_ms":236,"ollama_ms":null,"ollama_used":false,"text":"you"}
+{"type":"iteration","i":4,"audio_ms":3000,"whisper_ms":235,"ollama_ms":null,"ollama_used":false,"text":"you"}
+{"type":"iteration","i":5,"audio_ms":3000,"whisper_ms":236,"ollama_ms":null,"ollama_used":false,"text":"you"}
+{"type":"iteration","i":6,"audio_ms":3000,"whisper_ms":232,"ollama_ms":null,"ollama_used":false,"text":"you"}
+{"type":"iteration","i":7,"audio_ms":3000,"whisper_ms":234,"ollama_ms":null,"ollama_used":false,"text":"you"}
+{"type":"iteration","i":8,"audio_ms":3000,"whisper_ms":232,"ollama_ms":null,"ollama_used":false,"text":"you"}
+{"type":"iteration","i":9,"audio_ms":3000,"whisper_ms":235,"ollama_ms":null,"ollama_used":false,"text":"you"}
+{"type":"summary","samples":10,"audio_ms":3000,"whisper_ms":{"p50":235,"p95":247,"min":232,"max":247,"mean":235},"ollama_ms":null,"total_ms":{"p50":235,"p95":247,"min":232,"max":247,"mean":235}}
