@@ -76,7 +76,9 @@ enum ListKind {
 
 fn format_as_list(raw: &str, kind: ListKind) -> String {
     let stripped = strip_list_prefix(raw);
-    let items = split_list_items(&stripped);
+    // Prefer ordinal-marked splitting first: "1 apple 2 banana 3 milk" or
+    // "one apple two banana three milk". Falls back to comma/and splitting.
+    let items = split_ordinal_items(&stripped).unwrap_or_else(|| split_list_items(&stripped));
     if items.is_empty() {
         return raw.to_string();
     }
@@ -89,6 +91,76 @@ fn format_as_list(raw: &str, kind: ListKind) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+// ── ordinal-marked item splitting ──────────────────────────────────────────
+
+const ORDINAL_WORDS: &[&str] = &[
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+];
+
+static ORDINAL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?i)\b(10|[1-9]|one|two|three|four|five|six|seven|eight|nine|ten)\b",
+    )
+    .unwrap()
+});
+
+fn ordinal_index(s: &str) -> Option<usize> {
+    let lower = s.to_lowercase();
+    if let Some(i) = ORDINAL_WORDS.iter().position(|&w| w == lower) {
+        return Some(i);
+    }
+    lower.parse::<usize>().ok().and_then(|n| {
+        if (1..=ORDINAL_WORDS.len()).contains(&n) {
+            Some(n - 1)
+        } else {
+            None
+        }
+    })
+}
+
+/// Split on in-sequence ordinal markers starting from 0. Accepts both digit
+/// and word forms, and both may be mixed ("1 apple two banana 3 milk").
+/// Returns `None` if fewer than two sequential markers are found — caller
+/// falls back to comma/and splitting.
+fn split_ordinal_items(s: &str) -> Option<Vec<String>> {
+    let mut markers: Vec<regex::Match> = Vec::new();
+    let mut expected = 0usize;
+    for m in ORDINAL_RE.find_iter(s) {
+        if let Some(n) = ordinal_index(m.as_str()) {
+            if n == expected {
+                markers.push(m);
+                expected += 1;
+            }
+        }
+    }
+    if markers.len() < 2 {
+        return None;
+    }
+    let mut items = Vec::with_capacity(markers.len());
+    for (i, m) in markers.iter().enumerate() {
+        let start = m.end();
+        let end = markers
+            .get(i + 1)
+            .map(|next| next.start())
+            .unwrap_or(s.len());
+        let slice = s[start..end]
+            .trim()
+            .trim_start_matches(|c: char| c == '.' || c == ',' || c == ':')
+            .trim();
+        let slice = slice
+            .trim_end_matches(|c: char| c == '.' || c == ',')
+            .trim();
+        if !slice.is_empty() {
+            items.push(slice.to_string());
+        }
+    }
+    if items.is_empty() {
+        None
+    } else {
+        Some(items)
+    }
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────
@@ -309,6 +381,54 @@ mod tests {
             Format::Numbered,
         );
         assert_eq!(out, "1. One\n2. Two\n3. Three");
+    }
+
+    // ── apply: ordinal-marked items (the ask from user) ───────
+
+    #[test]
+    fn formats_ordinal_list_with_digit_markers() {
+        let out = apply(
+            "ordinal list 1 apple 2 banana 3 milk",
+            Format::Numbered,
+        );
+        assert_eq!(out, "1. Apple\n2. Banana\n3. Milk");
+    }
+
+    #[test]
+    fn formats_ordinal_list_with_word_markers() {
+        let out = apply(
+            "ordinal list one apple two banana three milk",
+            Format::Numbered,
+        );
+        assert_eq!(out, "1. Apple\n2. Banana\n3. Milk");
+    }
+
+    #[test]
+    fn formats_ordinal_list_with_mixed_markers() {
+        let out = apply(
+            "ordinal list 1 apple two banana 3 milk",
+            Format::Numbered,
+        );
+        assert_eq!(out, "1. Apple\n2. Banana\n3. Milk");
+    }
+
+    #[test]
+    fn formats_bullets_with_ordinal_markers() {
+        let out = apply(
+            "bullet list 1 milk 2 bread 3 eggs",
+            Format::Bullets,
+        );
+        assert_eq!(out, "- Milk\n- Bread\n- Eggs");
+    }
+
+    #[test]
+    fn ordinal_with_whisper_dot_punctuation() {
+        // Whisper sometimes inserts stops after the digit.
+        let out = apply(
+            "ordinal list 1. apple 2. banana 3. milk",
+            Format::Numbered,
+        );
+        assert_eq!(out, "1. Apple\n2. Banana\n3. Milk");
     }
 
     // ── apply: plain pass-through ──────────────────────────────

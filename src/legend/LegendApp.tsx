@@ -1,23 +1,16 @@
 type Row = {
   key: string;
   title: string;
-  swatch: string; // CSS color for the dot
-  pulse: "none" | "slow" | "medium" | "fast";
-  when: string; // user-facing description
-  action: string; // what the user should do
+  swatch: string;
+  pulse: "none" | "slow" | "medium";
+  when: string;
+  action: string;
 };
 
-// The canonical source of truth for tray state colors mirrors
-// src-tauri/icons/tray_*.png + src-tauri/src/tray.rs::TrayState.
+// 4-color palette. Loading / Initializing / Processing all share the blue
+// "Working" state — the user only needs to distinguish WAIT from SPEAK.
+// The tray menu's first line still shows the specific sub-state in text.
 const ROWS: Row[] = [
-  {
-    key: "loading",
-    title: "Loading",
-    swatch: "#94a3b8",
-    pulse: "slow",
-    when: "App is starting up",
-    action: "Wait — whisper model + AI cleanup are warming up",
-  },
   {
     key: "idle",
     title: "Idle",
@@ -27,11 +20,11 @@ const ROWS: Row[] = [
     action: "Hold ⌃⇧Space when you want to speak",
   },
   {
-    key: "initializing",
-    title: "Initializing",
+    key: "working",
+    title: "Working",
     swatch: "#38bdf8",
-    pulse: "fast",
-    when: "Hotkey pressed; microphone warming up",
+    pulse: "medium",
+    when: "Loading, initializing mic, or processing",
     action: "Wait — don't speak yet",
   },
   {
@@ -43,20 +36,12 @@ const ROWS: Row[] = [
     action: "Speak now",
   },
   {
-    key: "processing",
-    title: "Processing",
-    swatch: "#f59e0b",
-    pulse: "medium",
-    when: "Whisper + Ollama running on your speech",
-    action: "Wait — text will paste automatically",
-  },
-  {
     key: "transcribed",
     title: "Transcribed",
     swatch: "#22c55e",
     pulse: "none",
     when: "Text just pasted into the focused app",
-    action: "Done — state returns to Idle in ~1 second",
+    action: "Done — returns to Idle in ~1 second",
   },
 ];
 
@@ -66,8 +51,8 @@ export function LegendApp() {
       <header className="legend-header">
         <h1>Status Legend</h1>
         <p className="subtle">
-          The tray-icon color tells you what Svara is doing. Same color
-          appears in the menu status line and tooltip.
+          Four colors, one rule: watch the tray icon for when to speak. The
+          menu's top line always shows exact status text.
         </p>
       </header>
 
@@ -90,8 +75,8 @@ export function LegendApp() {
       <section className="legend-triggers">
         <h2>List triggers</h2>
         <p className="subtle">
-          Say one of these phrases before your items to auto-format as a list.
-          No trigger = plain paragraph.
+          Prefix your speech with one of these phrases to format as a list
+          automatically. No trigger = plain paragraph.
         </p>
         <ul>
           <li>
@@ -105,9 +90,16 @@ export function LegendApp() {
           </li>
         </ul>
         <p className="subtle example">
-          Example: <em>"ordinal list coffee, tea, water"</em> →{" "}
-          <code>1. Coffee, 2. Tea, 3. Water</code>
+          Examples:
         </p>
+        <ul className="example-list">
+          <li>
+            <em>"ordinal list 1 apple 2 banana 3 milk"</em>
+          </li>
+          <li>
+            <em>"bullet list milk, bread and eggs"</em>
+          </li>
+        </ul>
       </section>
 
       <footer className="legend-footer subtle">

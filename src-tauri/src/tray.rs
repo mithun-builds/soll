@@ -10,15 +10,14 @@ use tauri::{
 };
 
 const TRAY_ID: &str = "svara-tray";
-const BLINK_MS: u64 = 400;
-const INIT_BLINK_MS: u64 = 180; // fast pulse — must visibly differ from Loading
-const LOADING_BLINK_MS: u64 = 800;
+/// Every "working" state (Loading / Initializing / Processing) uses the same
+/// blue blink cadence. The user only needs to distinguish "wait" from "speak".
+const WORKING_BLINK_MS: u64 = 500;
+const TRANSCRIBING_BLINK_MS: u64 = 400;
 const DONE_REVERT_MS: u64 = 900;
 
-static IMG_LOADING: Lazy<Image<'static>> =
-    Lazy::new(|| Image::from_bytes(include_bytes!("../icons/tray_loading.png")).unwrap());
-static IMG_LOADING_DIM: Lazy<Image<'static>> =
-    Lazy::new(|| Image::from_bytes(include_bytes!("../icons/tray_loading_dim.png")).unwrap());
+// Four-color palette: blue (working), yellow (idle), red (speak), green (done).
+// Gray/orange icons removed from the state machine — unused now.
 static IMG_BLUE: Lazy<Image<'static>> =
     Lazy::new(|| Image::from_bytes(include_bytes!("../icons/tray_blue.png")).unwrap());
 static IMG_BLUE_DIM: Lazy<Image<'static>> =
@@ -29,10 +28,6 @@ static IMG_RED: Lazy<Image<'static>> =
     Lazy::new(|| Image::from_bytes(include_bytes!("../icons/tray_red.png")).unwrap());
 static IMG_RED_DIM: Lazy<Image<'static>> =
     Lazy::new(|| Image::from_bytes(include_bytes!("../icons/tray_red_dim.png")).unwrap());
-static IMG_ORANGE: Lazy<Image<'static>> =
-    Lazy::new(|| Image::from_bytes(include_bytes!("../icons/tray_orange.png")).unwrap());
-static IMG_ORANGE_DIM: Lazy<Image<'static>> =
-    Lazy::new(|| Image::from_bytes(include_bytes!("../icons/tray_orange_dim.png")).unwrap());
 static IMG_GREEN: Lazy<Image<'static>> =
     Lazy::new(|| Image::from_bytes(include_bytes!("../icons/tray_green.png")).unwrap());
 
@@ -91,6 +86,7 @@ pub fn build_tray(app: &AppHandle) -> Result<()> {
         None::<&str>,
     )?;
     let _ = STATUS_ITEM.set(status_item.clone());
+    let initial_icon = IMG_BLUE.clone();
 
     let hotkey_item = MenuItem::with_id(
         app,
@@ -118,7 +114,7 @@ pub fn build_tray(app: &AppHandle) -> Result<()> {
     )?;
 
     TrayIconBuilder::with_id(TRAY_ID)
-        .icon(IMG_LOADING.clone())
+        .icon(initial_icon)
         .icon_as_template(false)
         .tooltip(TrayState::Loading.tooltip())
         .menu(&menu)
@@ -186,26 +182,10 @@ pub fn set_state(app: &AppHandle, state: TrayState) {
     }
 
     match state {
-        TrayState::Loading => {
-            set_icon(app, IMG_LOADING.clone());
-            start_blink(
-                app.clone(),
-                my_epoch,
-                IMG_LOADING.clone(),
-                IMG_LOADING_DIM.clone(),
-                LOADING_BLINK_MS,
-            );
-        }
         TrayState::Idle => set_icon(app, IMG_YELLOW.clone()),
-        TrayState::Initializing => {
-            set_icon(app, IMG_BLUE.clone());
-            start_blink(
-                app.clone(),
-                my_epoch,
-                IMG_BLUE.clone(),
-                IMG_BLUE_DIM.clone(),
-                INIT_BLINK_MS,
-            );
+        TrayState::Transcribed => {
+            set_icon(app, IMG_GREEN.clone());
+            schedule_revert(app.clone(), my_epoch);
         }
         TrayState::Transcribing => {
             set_icon(app, IMG_RED.clone());
@@ -214,22 +194,21 @@ pub fn set_state(app: &AppHandle, state: TrayState) {
                 my_epoch,
                 IMG_RED.clone(),
                 IMG_RED_DIM.clone(),
-                BLINK_MS,
+                TRANSCRIBING_BLINK_MS,
             );
         }
-        TrayState::Processing => {
-            set_icon(app, IMG_ORANGE.clone());
+        // All three "working" variants share the same blue blink so the
+        // user sees a single consistent "wait" signal. The text in the
+        // tray menu still distinguishes them for anyone who wants detail.
+        TrayState::Loading | TrayState::Initializing | TrayState::Processing => {
+            set_icon(app, IMG_BLUE.clone());
             start_blink(
                 app.clone(),
                 my_epoch,
-                IMG_ORANGE.clone(),
-                IMG_ORANGE_DIM.clone(),
-                BLINK_MS,
+                IMG_BLUE.clone(),
+                IMG_BLUE_DIM.clone(),
+                WORKING_BLINK_MS,
             );
-        }
-        TrayState::Transcribed => {
-            set_icon(app, IMG_GREEN.clone());
-            schedule_revert(app.clone(), my_epoch);
         }
     }
 }
