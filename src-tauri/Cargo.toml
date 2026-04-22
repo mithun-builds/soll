@@ -25,6 +25,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 # Audio capture
 cpal = "0.15"
 
+# WAV reader — used by the benchmark harness to replay fixture audio
+hound = "3.5"
+
 # Speech-to-text (whisper.cpp bindings, Metal-accelerated on macOS)
 whisper-rs = { version = "0.11", features = ["metal"] }
 
@@ -48,6 +51,10 @@ log = "0.4"
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26"
 objc = "0.2"
+
+[[example]]
+name = "bench_pipeline"
+path = "examples/bench_pipeline.rs"
 
 [profile.release]
 opt-level = 3

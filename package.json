@@ -10,7 +10,10 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "bench": "cd src-tauri && cargo run --release --example bench_pipeline -- --wav ../benchmarks/fixtures/silence_3s.wav --n 10",
+    "bench:tone": "cd src-tauri && cargo run --release --example bench_pipeline -- --wav ../benchmarks/fixtures/tone_440_2s.wav --n 10",
+    "bench:no-ollama": "cd src-tauri && cargo run --release --example bench_pipeline -- --wav ../benchmarks/fixtures/silence_3s.wav --n 10 --no-ollama"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.1.1",
