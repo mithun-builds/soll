@@ -18,18 +18,37 @@ pub enum Format {
     Numbered,
 }
 
-/// Word forms we recognize as ordinal markers. Order is load-bearing —
-/// detection requires these to appear in sequence.
+/// Word forms we recognize as ordinal markers. Detection normalizes each
+/// match — word OR digit — into a 0-based index (one=1=0, two=2=1, …).
 const ORDINALS: &[&str] = &[
     "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
 ];
 
+/// Matches either a small integer (1..=10, with optional trailing '.' or ')' )
+/// or one of the spelled-out ordinal words. Whisper often transcribes spoken
+/// "one two three" as digits ("1 2 3" or "1. 2. 3."), so we must accept both.
 static ORDINAL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r"(?i)\b(one|two|three|four|five|six|seven|eight|nine|ten)\b",
+        r"(?i)\b(10|[1-9]|one|two|three|four|five|six|seven|eight|nine|ten)\b",
     )
     .unwrap()
 });
+
+/// Convert a captured ordinal (word or digit) to its 0-based index.
+/// Returns None for unrecognized input (shouldn't happen with ORDINAL_RE).
+fn ordinal_index(s: &str) -> Option<usize> {
+    let lower = s.to_lowercase();
+    if let Some(pos) = ORDINALS.iter().position(|&w| w == lower) {
+        return Some(pos);
+    }
+    lower.parse::<usize>().ok().and_then(|n| {
+        if (1..=ORDINALS.len()).contains(&n) {
+            Some(n - 1)
+        } else {
+            None
+        }
+    })
+}
 
 /// Decide what to do with raw whisper output.
 pub fn detect(raw: &str) -> Format {
@@ -71,13 +90,14 @@ pub fn apply(raw: &str, format: Format) -> String {
 // ── detection helpers ───────────────────────────────────────────────────────
 
 fn has_sequential_ordinals(text: &str, min_count: usize) -> bool {
-    let mut next_idx = 0;
+    let mut expected = 0usize;
     for m in ORDINAL_RE.find_iter(text) {
-        let word = m.as_str().to_lowercase();
-        if next_idx < ORDINALS.len() && word == ORDINALS[next_idx] {
-            next_idx += 1;
-            if next_idx >= min_count {
-                return true;
+        if let Some(n) = ordinal_index(m.as_str()) {
+            if n == expected {
+                expected += 1;
+                if expected >= min_count {
+                    return true;
+                }
             }
         }
     }
@@ -88,15 +108,16 @@ fn has_sequential_ordinals(text: &str, min_count: usize) -> bool {
 
 fn to_numbered_list(raw: &str) -> String {
     let matches: Vec<_> = ORDINAL_RE.find_iter(raw).collect();
-    // Keep only the matches that appear in sequence (one, two, three, …). This
-    // guards against stray "one" or "two" not used as list markers.
-    let mut expected_idx = 0;
+    // Keep only the matches that appear in sequence starting from 0 (one, two,
+    // three or 1, 2, 3). Stray unrelated numbers are ignored.
+    let mut expected = 0usize;
     let mut list_markers: Vec<regex::Match> = Vec::new();
     for m in matches {
-        let word = m.as_str().to_lowercase();
-        if expected_idx < ORDINALS.len() && word == ORDINALS[expected_idx] {
-            list_markers.push(m);
-            expected_idx += 1;
+        if let Some(n) = ordinal_index(m.as_str()) {
+            if n == expected {
+                list_markers.push(m);
+                expected += 1;
+            }
         }
     }
     if list_markers.len() < 2 {
@@ -330,5 +351,56 @@ mod tests {
     fn plain_passes_through() {
         let text = "Hello, how are you?";
         assert_eq!(apply(text, Format::Plain), text);
+    }
+
+    // ── digit-form ordinals (Whisper real-world outputs) ──────
+
+    #[test]
+    fn detects_digit_ordinals_in_sequence() {
+        // Observed from Day-3 run #6.
+        assert_eq!(
+            detect("1 apple, 2 banana, 3 grape."),
+            Format::Numbered
+        );
+    }
+
+    #[test]
+    fn formats_digit_ordinals() {
+        let out = apply("1 apple, 2 banana, 3 grape.", Format::Numbered);
+        assert_eq!(out, "1. Apple\n2. Banana\n3. Grape");
+    }
+
+    #[test]
+    fn formats_digit_ordinals_with_periods() {
+        // Whisper sometimes inserts stops after each digit.
+        let out = apply("1. Coffee 2. Tea 3. Water 4. Juice", Format::Numbered);
+        assert_eq!(out, "1. Coffee\n2. Tea\n3. Water\n4. Juice");
+    }
+
+    #[test]
+    fn mixed_word_and_digit_ordinals() {
+        // "one apple, 2 banana, three grape" — user emphasized digits mid-list.
+        let out = apply(
+            "one apple, 2 banana, three grape",
+            Format::Numbered,
+        );
+        assert_eq!(out, "1. Apple\n2. Banana\n3. Grape");
+    }
+
+    #[test]
+    fn random_digits_in_prose_dont_trigger() {
+        // "3 people attended at 4 pm" — digits present but not starting from 1.
+        assert_eq!(
+            detect("3 people attended at 4 pm at building 5"),
+            Format::Plain
+        );
+    }
+
+    #[test]
+    fn single_digit_doesnt_trigger() {
+        assert_eq!(
+            detect("The meeting is at 3 p.m. tomorrow"),
+            Format::Plain
+        );
     }
 }
