@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { DictionaryApp } from "./dictionary/DictionaryApp";
+import { LegendApp } from "./legend/LegendApp";
 import "./styles.css";
 
 const params = new URLSearchParams(window.location.search);
@@ -8,6 +9,7 @@ const view = params.get("view");
 
 function Root() {
   if (view === "dictionary") return <DictionaryApp />;
+  if (view === "legend") return <LegendApp />;
   // Svara is tray-first. No other views exist yet; if someone lands on
   // the default URL, show a minimal "nothing here" placeholder.
   return (

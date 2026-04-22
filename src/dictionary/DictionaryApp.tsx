@@ -59,6 +59,12 @@ export function DictionaryApp() {
         <p className="subtle">
           Names, jargon, and specific terms Svara should always get right.
         </p>
+        <p className="dict-hint">
+          Type each term in the <strong>exact casing</strong> you want
+          pasted. <code>GrowthBook</code> and <code>Growthbook</code> are
+          different entries — whatever you type here is what appears in
+          your text.
+        </p>
       </header>
 
       <form className="dict-add" onSubmit={onAdd}>

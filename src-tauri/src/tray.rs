@@ -100,12 +100,21 @@ pub fn build_tray(app: &AppHandle) -> Result<()> {
         None::<&str>,
     )?;
     let dictionary = MenuItem::with_id(app, "dictionary", "Dictionary…", true, None::<&str>)?;
+    let legend = MenuItem::with_id(app, "legend", "Status Legend…", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Svara", true, Some("Cmd+Q"))?;
 
     let menu = Menu::with_items(
         app,
-        &[&status_item, &hotkey_item, &sep, &dictionary, &sep, &quit],
+        &[
+            &status_item,
+            &hotkey_item,
+            &sep,
+            &dictionary,
+            &legend,
+            &sep,
+            &quit,
+        ],
     )?;
 
     TrayIconBuilder::with_id(TRAY_ID)
@@ -117,6 +126,7 @@ pub fn build_tray(app: &AppHandle) -> Result<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "quit" => app.exit(0),
             "dictionary" => open_dictionary_window(app),
+            "legend" => open_legend_window(app),
             _ => {}
         })
         .build(app)?;
@@ -142,6 +152,26 @@ pub fn open_dictionary_window(app: &AppHandle) {
     {
         Ok(_) => log::info!("opened dictionary window"),
         Err(e) => log::error!("open dictionary window: {e:?}"),
+    }
+}
+
+pub fn open_legend_window(app: &AppHandle) {
+    const LABEL: &str = "legend";
+    if let Some(existing) = app.get_webview_window(LABEL) {
+        let _ = existing.show();
+        let _ = existing.set_focus();
+        return;
+    }
+    let url = WebviewUrl::App("index.html?view=legend".into());
+    match WebviewWindowBuilder::new(app, LABEL, url)
+        .title("Svara — Status Legend")
+        .inner_size(460.0, 560.0)
+        .min_inner_size(420.0, 480.0)
+        .resizable(true)
+        .build()
+    {
+        Ok(_) => log::info!("opened legend window"),
+        Err(e) => log::error!("open legend window: {e:?}"),
     }
 }
 
