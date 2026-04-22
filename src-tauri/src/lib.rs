@@ -1,4 +1,5 @@
 mod audio;
+mod commands;
 mod paste;
 mod pipeline;
 mod state;
@@ -8,6 +9,7 @@ mod tray;
 // Everything under these modules is re-entered by the bench, so it
 // must run the same code paths production does.
 pub mod cleanup;
+pub mod dictionary;
 pub mod metal;
 pub mod model;
 pub mod transcribe;
@@ -35,6 +37,11 @@ pub fn run() {
     let ptt_for_handler = ptt.clone();
 
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![
+            commands::dict_list,
+            commands::dict_add,
+            commands::dict_remove,
+        ])
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Info)

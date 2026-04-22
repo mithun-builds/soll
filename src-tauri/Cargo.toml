@@ -28,6 +28,9 @@ cpal = "0.15"
 # WAV reader — used by the benchmark harness to replay fixture audio
 hound = "3.5"
 
+# Personal dictionary storage
+rusqlite = { version = "0.31", features = ["bundled"] }
+
 # Speech-to-text (whisper.cpp bindings, Metal-accelerated on macOS)
 whisper-rs = { version = "0.11", features = ["metal"] }
 

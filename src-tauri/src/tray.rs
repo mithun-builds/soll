@@ -6,12 +6,12 @@ use tauri::{
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    AppHandle,
+    AppHandle, Manager, WebviewUrl, WebviewWindowBuilder,
 };
 
 const TRAY_ID: &str = "svara-tray";
 const BLINK_MS: u64 = 400;
-const LOADING_BLINK_MS: u64 = 800; // slower pulse distinguishes from recording
+const LOADING_BLINK_MS: u64 = 800;
 const DONE_REVERT_MS: u64 = 900;
 
 static IMG_LOADING: Lazy<Image<'static>> =
@@ -35,21 +35,16 @@ static EPOCH: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Copy, Clone, Debug)]
 pub enum TrayState {
-    Loading,    // gray, slow pulse — whisper loading / Metal warming
-    Idle,       // yellow, static — ready to dictate
-    Recording,  // red, blinking
-    Processing, // orange, blinking
-    Done,       // green for ~1s, auto-reverts to idle
+    Loading,
+    Idle,
+    Recording,
+    Processing,
+    Done,
 }
 
 pub fn build_tray(app: &AppHandle) -> Result<()> {
-    let status_item = MenuItem::with_id(
-        app,
-        "status",
-        "Svara — starting…",
-        false,
-        None::<&str>,
-    )?;
+    let status_item =
+        MenuItem::with_id(app, "status", "Svara — starting…", false, None::<&str>)?;
     let hotkey_item = MenuItem::with_id(
         app,
         "hotkey_info",
@@ -57,30 +52,51 @@ pub fn build_tray(app: &AppHandle) -> Result<()> {
         false,
         None::<&str>,
     )?;
+    let dictionary = MenuItem::with_id(app, "dictionary", "Dictionary…", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Svara", true, Some("Cmd+Q"))?;
 
     let menu = Menu::with_items(
         app,
-        &[&status_item, &hotkey_item, &sep, &quit],
+        &[&status_item, &hotkey_item, &sep, &dictionary, &sep, &quit],
     )?;
 
     TrayIconBuilder::with_id(TRAY_ID)
-        .icon(IMG_LOADING.clone()) // start gray until warm-up signals Idle
+        .icon(IMG_LOADING.clone())
         .icon_as_template(false)
         .tooltip("Svara — starting…")
         .menu(&menu)
         .show_menu_on_left_click(true)
-        .on_menu_event(|app, event| {
-            if event.id.as_ref() == "quit" {
-                app.exit(0);
-            }
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "quit" => app.exit(0),
+            "dictionary" => open_dictionary_window(app),
+            _ => {}
         })
         .build(app)?;
 
-    // Kick off the loading pulse right away.
     set_state(app, TrayState::Loading);
     Ok(())
+}
+
+/// Open (or focus, if already open) the dictionary CRUD window.
+pub fn open_dictionary_window(app: &AppHandle) {
+    const LABEL: &str = "dictionary";
+    if let Some(existing) = app.get_webview_window(LABEL) {
+        let _ = existing.show();
+        let _ = existing.set_focus();
+        return;
+    }
+    let url = WebviewUrl::App("index.html?view=dictionary".into());
+    match WebviewWindowBuilder::new(app, LABEL, url)
+        .title("Svara — Dictionary")
+        .inner_size(520.0, 680.0)
+        .min_inner_size(420.0, 480.0)
+        .resizable(true)
+        .build()
+    {
+        Ok(_) => log::info!("opened dictionary window"),
+        Err(e) => log::error!("open dictionary window: {e:?}"),
+    }
 }
 
 pub fn set_state(app: &AppHandle, state: TrayState) {
