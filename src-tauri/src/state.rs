@@ -100,9 +100,14 @@ impl AppState {
             }
             *rec = true;
         }
-        self.set_tray(TrayState::Recording);
+        // Show "Initializing" first — the cpal stream takes ~50–120 ms to
+        // build, and the user shouldn't start speaking until capture is
+        // actually live.
+        self.set_tray(TrayState::Initializing);
         let recorder = AudioRecorder::start()?;
         *self.recorder.lock() = Some(recorder);
+        // Mic is now capturing — signal the user to speak.
+        self.set_tray(TrayState::Transcribing);
         Ok(())
     }
 
@@ -191,7 +196,7 @@ impl AppState {
             "[latency #{n}] audio={audio_ms}ms whisper={whisper_ms}ms {ollama_tag}={ollama_ms}ms paste={paste_ms}ms total={total_ms}ms chars={char_count} text={trimmed:?}"
         );
 
-        self.set_tray(TrayState::Done);
+        self.set_tray(TrayState::Transcribed);
         Ok(())
     }
 }
