@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use log::{info, warn};
 use parking_lot::Mutex;
 use tauri::{AppHandle, Manager};
@@ -12,8 +12,9 @@ use crate::audio::AudioRecorder;
 use crate::cleanup::OllamaClient;
 use crate::dictionary::Dictionary;
 use crate::formatter::{self, Format};
-use crate::model::ensure_model;
+use crate::model::{ensure_model, WhisperModel};
 use crate::paste::paste_text;
+use crate::settings::{Settings, KEY_WHISPER_MODEL};
 use crate::transcribe::Transcriber;
 use crate::tray::{self, TrayState};
 
@@ -22,75 +23,145 @@ static DICTATION_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub struct AppState {
     pub app: AppHandle,
     pub dictionary: Arc<Dictionary>,
+    pub settings: Arc<Settings>,
+    /// Currently-loaded whisper model, kept in sync with the Transcriber.
+    current_model: Mutex<WhisperModel>,
     recorder: Mutex<Option<AudioRecorder>>,
     transcriber: AsyncMutex<Option<Arc<Transcriber>>>,
+    /// Held exclusively during model swaps so dictations don't start on a
+    /// half-loaded transcriber.
+    swap_guard: AsyncMutex<()>,
     ollama: OllamaClient,
     is_recording: Mutex<bool>,
 }
 
 impl AppState {
     pub fn new(app: AppHandle) -> Self {
-        let dict = match app.path().app_data_dir() {
-            Ok(dir) => {
-                let db = dir.join("dict.db");
-                match Dictionary::open(&db) {
-                    Ok(d) => Arc::new(d),
-                    Err(e) => {
-                        log::error!("dictionary open failed at {}: {e:?}", db.display());
-                        panic!("cannot open dictionary db: {e:?}");
-                    }
-                }
-            }
-            Err(e) => panic!("no app_data_dir for dictionary: {e:?}"),
+        let data_dir = match app.path().app_data_dir() {
+            Ok(d) => d,
+            Err(e) => panic!("no app_data_dir: {e:?}"),
         };
+        let dict = match Dictionary::open(&data_dir.join("dict.db")) {
+            Ok(d) => Arc::new(d),
+            Err(e) => panic!("cannot open dictionary db: {e:?}"),
+        };
+        let settings = match Settings::open(&data_dir.join("settings.db")) {
+            Ok(s) => Arc::new(s),
+            Err(e) => panic!("cannot open settings db: {e:?}"),
+        };
+        let preferred = settings
+            .get_or_default(KEY_WHISPER_MODEL, WhisperModel::DEFAULT.id());
+        let model = WhisperModel::from_id(&preferred).unwrap_or(WhisperModel::DEFAULT);
 
         Self {
             app,
             dictionary: dict,
+            settings,
+            current_model: Mutex::new(model),
             recorder: Mutex::new(None),
             transcriber: AsyncMutex::new(None),
+            swap_guard: AsyncMutex::new(()),
             ollama: OllamaClient::new(),
             is_recording: Mutex::new(false),
         }
+    }
+
+    pub fn current_model(&self) -> WhisperModel {
+        *self.current_model.lock()
     }
 
     fn set_tray(&self, state: TrayState) {
         tray::set_state(&self.app, state);
     }
 
-    /// Download the model (if needed), load whisper, compile Metal kernels,
-    /// and pre-warm Ollama — all in parallel where possible. Tray shows
-    /// Loading until this fully completes.
+    /// Download the preferred model (if needed), load whisper, compile Metal
+    /// kernels, and pre-warm Ollama. Tray stays in Loading until this completes.
     pub async fn warm_up(self: &Arc<Self>) -> Result<()> {
-        let t0 = std::time::Instant::now();
-        info!("warming up transcriber + cleanup…");
+        let model = self.current_model();
+        info!("warming up: whisper={} + cleanup", model.id());
 
-        // Ollama warm-up runs concurrently — we don't block on it.
+        // Ollama warm-up runs concurrently.
         let me = self.clone();
         tokio::spawn(async move {
             me.ollama.warm_up().await;
         });
 
-        let path = ensure_model(&self.app).await?;
-        info!("model ready ({:?}); loading whisper…", t0.elapsed());
+        self.load_model(model).await
+    }
 
-        // Load + warm on the blocking pool so we don't starve the runtime.
-        let t = tokio::task::spawn_blocking(move || -> Result<Transcriber> {
-            let t_load = std::time::Instant::now();
+    /// Switch to a different model. Downloads if not cached; loads + warms;
+    /// swaps atomically. Blocks on `swap_guard` so concurrent dictations
+    /// can't observe a half-loaded state.
+    pub async fn switch_model(self: Arc<Self>, model: WhisperModel) -> Result<()> {
+        if model == self.current_model() && self.transcriber.lock().await.is_some() {
+            info!("switch_model: {} already active", model.id());
+            return Ok(());
+        }
+        info!("switch_model -> {}", model.id());
+        self.load_model(model).await?;
+        self.settings
+            .set(KEY_WHISPER_MODEL, model.id())
+            .context("persist whisper_model setting")?;
+        Ok(())
+    }
+
+    /// Core load routine used by both warm_up and switch_model.
+    async fn load_model(self: &Arc<Self>, model: WhisperModel) -> Result<()> {
+        let _swap = self.swap_guard.lock().await;
+        let t0 = std::time::Instant::now();
+        self.set_tray(TrayState::Loading);
+
+        let app = self.app.clone();
+        let me = self.clone();
+        let path = ensure_model(&self.app, model, move |done, total| {
+            me.report_download_progress(model, done, total);
+        })
+        .await?;
+        info!(
+            "{} on disk in {:?} — loading into whisper…",
+            model.id(),
+            t0.elapsed()
+        );
+
+        let t_load_start = std::time::Instant::now();
+        let model_id = model.id();
+        let transcriber = tokio::task::spawn_blocking(move || -> Result<Transcriber> {
             let t = Transcriber::load(&path)?;
-            info!("whisper loaded in {:?}; compiling Metal kernels…", t_load.elapsed());
+            info!("{} loaded in {:?}; warming Metal kernels…", model_id, t_load_start.elapsed());
             let t_warm = std::time::Instant::now();
             t.warm()?;
-            info!("Metal kernels compiled in {:?}", t_warm.elapsed());
+            info!("{} Metal kernels compiled in {:?}", model_id, t_warm.elapsed());
             Ok(t)
         })
         .await
         .map_err(|e| anyhow!("join error: {e}"))??;
 
-        *self.transcriber.lock().await = Some(Arc::new(t));
-        info!("transcriber fully ready in {:?}", t0.elapsed());
+        *self.transcriber.lock().await = Some(Arc::new(transcriber));
+        *self.current_model.lock() = model;
+        info!("{} fully ready in {:?}", model.id(), t0.elapsed());
+        let _ = app;
         self.set_tray(TrayState::Idle);
         Ok(())
+    }
+
+    fn report_download_progress(&self, model: WhisperModel, done: u64, total: u64) {
+        if total == 0 {
+            return;
+        }
+        // Throttle: only log every 5%.
+        static LAST_PCT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+        let pct = done * 100 / total;
+        let bucket = pct / 5;
+        let prev = LAST_PCT.load(std::sync::atomic::Ordering::Relaxed);
+        if bucket != prev {
+            LAST_PCT.store(bucket, std::sync::atomic::Ordering::Relaxed);
+            info!(
+                "download {}: {pct}% ({} / {} MB)",
+                model.id(),
+                done / (1024 * 1024),
+                total / (1024 * 1024)
+            );
+        }
     }
 
     pub async fn on_press(self: Arc<Self>) -> Result<()> {

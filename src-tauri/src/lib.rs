@@ -2,6 +2,7 @@ mod audio;
 mod commands;
 mod paste;
 mod pipeline;
+mod settings;
 mod state;
 mod tray;
 

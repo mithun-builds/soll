@@ -1,74 +1,164 @@
+//! Whisper model catalog + downloader.
+//!
+//! Four models are selectable at runtime via the tray submenu:
+//!
+//! | id        | size    | approx speed vs base | use case                      |
+//! |-----------|---------|----------------------|-------------------------------|
+//! | tiny.en   | 39 MB   | 3x faster            | fastest, weakest accuracy     |
+//! | base.en   | 142 MB  | baseline             | good balance (current default)|
+//! | small.en  | 466 MB  | 1.8x slower          | big accuracy gain             |
+//! | medium.en | 1.4 GB  | 4x slower            | best accuracy, still < 2 s    |
+//!
+//! Models are downloaded from HuggingFace (ggerganov/whisper.cpp) on first
+//! selection and cached in `$APP_DATA/models/`. A progress callback fires
+//! as bytes stream in so the tray can show "Downloading small.en… 37%".
+
 use anyhow::{anyhow, Context, Result};
 use futures_util::StreamExt;
 use log::info;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
-const MODEL_URL: &str =
-    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin";
-const MODEL_FILE: &str = "ggml-base.en.bin";
-// Expected size ~148MB; we only check that the file is non-trivial.
-const MIN_SIZE_BYTES: u64 = 100 * 1024 * 1024;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WhisperModel {
+    TinyEn,
+    BaseEn,
+    SmallEn,
+    MediumEn,
+}
 
-pub async fn ensure_model(app: &AppHandle) -> Result<PathBuf> {
-    let dir = model_dir(app)?;
-    tokio::fs::create_dir_all(&dir).await.ok();
-    let path = dir.join(MODEL_FILE);
+impl WhisperModel {
+    /// Preferred default for fresh installs — best quality-per-ms on M-series.
+    pub const DEFAULT: Self = Self::SmallEn;
 
-    if let Ok(meta) = tokio::fs::metadata(&path).await {
-        if meta.len() >= MIN_SIZE_BYTES {
-            info!("model already present at {}", path.display());
-            return Ok(path);
-        } else {
-            let _ = tokio::fs::remove_file(&path).await;
+    pub const ALL: &'static [Self] = &[
+        Self::TinyEn,
+        Self::BaseEn,
+        Self::SmallEn,
+        Self::MediumEn,
+    ];
+
+    pub fn from_id(s: &str) -> Option<Self> {
+        match s {
+            "tiny.en" => Some(Self::TinyEn),
+            "base.en" => Some(Self::BaseEn),
+            "small.en" => Some(Self::SmallEn),
+            "medium.en" => Some(Self::MediumEn),
+            _ => None,
         }
     }
 
-    info!("downloading whisper base.en ({MODEL_URL}) → {}", path.display());
-    let client = reqwest::Client::builder()
-        .build()
-        .context("build http client")?;
-    let resp = client
-        .get(MODEL_URL)
-        .send()
-        .await
-        .context("start model download")?;
-    if !resp.status().is_success() {
-        return Err(anyhow!("model download status: {}", resp.status()));
+    pub fn id(&self) -> &'static str {
+        match self {
+            Self::TinyEn => "tiny.en",
+            Self::BaseEn => "base.en",
+            Self::SmallEn => "small.en",
+            Self::MediumEn => "medium.en",
+        }
     }
 
-    let tmp = path.with_extension("bin.part");
-    let mut file = tokio::fs::File::create(&tmp)
+    pub fn filename(&self) -> String {
+        format!("ggml-{}.bin", self.id())
+    }
+
+    pub fn url(&self) -> String {
+        format!(
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{}",
+            self.filename()
+        )
+    }
+
+    /// Approximate download size; used to validate cached files are complete.
+    pub fn expected_size_bytes(&self) -> u64 {
+        match self {
+            Self::TinyEn => 39 * 1024 * 1024,
+            Self::BaseEn => 142 * 1024 * 1024,
+            Self::SmallEn => 466 * 1024 * 1024,
+            Self::MediumEn => 1_420 * 1024 * 1024,
+        }
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::TinyEn => "Tiny — fastest (39 MB)",
+            Self::BaseEn => "Base — balanced (142 MB)",
+            Self::SmallEn => "Small — good accuracy (466 MB)",
+            Self::MediumEn => "Medium — best accuracy (1.4 GB)",
+        }
+    }
+}
+
+/// Ensure `model` is available on disk, downloading if necessary. Returns
+/// the absolute path. Invokes `on_progress(done_bytes, total_bytes)` during
+/// the download so callers can surface progress (total may be 0 if the
+/// server doesn't send Content-Length).
+pub async fn ensure_model(
+    app: &AppHandle,
+    model: WhisperModel,
+    mut on_progress: impl FnMut(u64, u64) + Send,
+) -> Result<PathBuf> {
+    let dir = model_dir(app)?;
+    tokio::fs::create_dir_all(&dir).await.ok();
+    let path = dir.join(model.filename());
+    let min_size = model.expected_size_bytes() * 9 / 10;
+
+    if let Ok(meta) = tokio::fs::metadata(&path).await {
+        if meta.len() >= min_size {
+            info!("model {} cached at {}", model.id(), path.display());
+            return Ok(path);
+        }
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    info!(
+        "downloading {} from {} -> {}",
+        model.id(),
+        model.url(),
+        path.display()
+    );
+    let client = reqwest::Client::builder().build().context("http client")?;
+    let resp = client
+        .get(model.url())
+        .send()
         .await
-        .context("create tmp file")?;
+        .with_context(|| format!("request {}", model.url()))?;
+    if !resp.status().is_success() {
+        return Err(anyhow!("download {} status {}", model.id(), resp.status()));
+    }
+    let total = resp.content_length().unwrap_or(0);
+
+    let tmp = path.with_extension("bin.part");
+    let mut file = tokio::fs::File::create(&tmp).await.context("create tmp")?;
     let mut stream = resp.bytes_stream();
+    let mut done: u64 = 0;
     use tokio::io::AsyncWriteExt;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.context("download chunk")?;
         file.write_all(&chunk).await.context("write chunk")?;
+        done += chunk.len() as u64;
+        on_progress(done, total);
     }
     file.flush().await.ok();
     drop(file);
-    tokio::fs::rename(&tmp, &path)
-        .await
-        .context("rename tmp -> final")?;
-    info!("model ready at {}", path.display());
+    tokio::fs::rename(&tmp, &path).await.context("rename tmp")?;
+    info!("downloaded {} ({} bytes)", model.id(), done);
     Ok(path)
 }
 
 fn model_dir(app: &AppHandle) -> Result<PathBuf> {
-    let base = app
-        .path()
-        .app_data_dir()
-        .context("app data dir")?;
+    let base = app.path().app_data_dir().context("app data dir")?;
     Ok(base.join("models"))
 }
 
-/// Resolve the default model path WITHOUT an AppHandle — used by the
-/// benchmark binary and other offline tools. On macOS this matches what
-/// Tauri's `app_data_dir()` returns for identifier `com.svara.app`:
-///   ~/Library/Application Support/com.svara.app/models/ggml-base.en.bin
+/// Standalone model-path resolver for the bench tool (no AppHandle). Defaults
+/// to base.en to preserve the bench's historical baseline; callers pass
+/// `--model` on the CLI to override.
 pub fn default_model_path_standalone() -> Option<PathBuf> {
     let data_dir = dirs::data_dir()?;
-    Some(data_dir.join("com.svara.app").join("models").join(MODEL_FILE))
+    Some(
+        data_dir
+            .join("com.svara.app")
+            .join("models")
+            .join("ggml-base.en.bin"),
+    )
 }
