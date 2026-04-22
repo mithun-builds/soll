@@ -98,6 +98,18 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Svara");
+        .build(tauri::generate_context!())
+        .expect("error while building Svara")
+        .run(|_app_handle, event| {
+            // Tauri's default is to exit when the last window closes, but
+            // Svara is a tray app — the only legitimate quit path is the
+            // tray's "Quit Svara" menu item (which calls `app.exit(0)` and
+            // sets `code = Some(0)`). Any other ExitRequested means a window
+            // just got closed; keep the app alive.
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+                if code.is_none() {
+                    api.prevent_exit();
+                }
+            }
+        });
 }
