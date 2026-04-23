@@ -1,7 +1,5 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { DictionaryApp } from "./dictionary/DictionaryApp";
-import { LegendApp } from "./legend/LegendApp";
 import { SettingsApp } from "./settings/SettingsApp";
 import "./styles.css";
 
@@ -9,15 +7,20 @@ const params = new URLSearchParams(window.location.search);
 const view = params.get("view");
 
 function Root() {
-  if (view === "dictionary") return <DictionaryApp />;
-  if (view === "legend") return <LegendApp />;
-  if (view === "settings") return <SettingsApp />;
-  // Svara is tray-first. No other views exist yet; if someone lands on
-  // the default URL, show a minimal "nothing here" placeholder.
+  // All admin UI lives in the unified Settings window.
+  // Legacy ?view=dictionary / ?view=legend are redirected for backwards
+  // compatibility with any shortcut someone saved from an earlier build.
+  if (
+    view === "settings" ||
+    view === "dictionary" ||
+    view === "legend"
+  ) {
+    return <SettingsApp />;
+  }
   return (
     <div className="placeholder">
       <h1>Svara</h1>
-      <p>Use the menu-bar icon to open the dictionary or quit.</p>
+      <p>Use the tray icon to open Settings or quit.</p>
     </div>
   );
 }

@@ -98,6 +98,86 @@ pub struct SettingsUpdate {
     pub email_sign_off: Option<String>,
 }
 
+// ── skills ─────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct SkillInfo {
+    pub name: String,
+    pub description: String,
+    pub trigger: String,
+    pub source: String, // "builtin" | "user"
+    pub native: Option<String>,
+}
+
+#[tauri::command]
+pub fn skill_list(state: State<'_, Arc<AppState>>) -> Vec<SkillInfo> {
+    state
+        .skills
+        .lock()
+        .iter()
+        .map(|s| SkillInfo {
+            name: s.name.clone(),
+            description: s.description.clone(),
+            trigger: s.trigger.as_str().to_string(),
+            source: s.source.as_str().to_string(),
+            native: s.native.clone(),
+        })
+        .collect()
+}
+
+// ── models ─────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct ModelInfo {
+    pub id: String,
+    pub label: String,
+    pub size: String,
+    pub is_cached: bool,
+    pub is_active: bool,
+    pub is_downloading: bool,
+}
+
+#[tauri::command]
+pub fn models_list(state: State<'_, Arc<AppState>>) -> Vec<ModelInfo> {
+    let current = state.current_model();
+    let downloading = *state.downloading.lock();
+    crate::model::WhisperModel::ALL
+        .iter()
+        .map(|m| ModelInfo {
+            id: m.id().to_string(),
+            label: m.short_name().to_string(),
+            size: m.size_label().to_string(),
+            is_cached: state.is_model_cached(*m),
+            is_active: *m == current,
+            is_downloading: downloading == Some(*m),
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub async fn model_activate(
+    id: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let model = crate::model::WhisperModel::from_id(&id)
+        .ok_or_else(|| format!("unknown model: {id}"))?;
+    let st = state.inner().clone();
+    st.switch_model(model).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn model_download(
+    id: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let model = crate::model::WhisperModel::from_id(&id)
+        .ok_or_else(|| format!("unknown model: {id}"))?;
+    let st = state.inner().clone();
+    st.start_download(model).await.map_err(|e| e.to_string())
+}
+
+// ── settings (existing) ────────────────────────────────────────────────────
+
 #[tauri::command]
 pub fn settings_set(
     update: SettingsUpdate,

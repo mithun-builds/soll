@@ -38,6 +38,23 @@ pub struct Skill {
     pub native: Option<String>,
     pub system_prompt: String,
     pub output_template: String,
+    /// Where the skill was loaded from — informs the UI.
+    pub source: SkillSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillSource {
+    Builtin,
+    User,
+}
+
+impl SkillSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Builtin => "builtin",
+            Self::User => "user",
+        }
+    }
 }
 
 /// Result of invoking a skill — either a ready-to-paste string (skills
@@ -88,6 +105,7 @@ impl Skill {
             native,
             system_prompt,
             output_template,
+            source: SkillSource::Builtin,
         })
     }
 
@@ -150,7 +168,8 @@ pub fn load_all(user_dir: Option<&std::path::Path>) -> Vec<Skill> {
                         if path.extension().map(|s| s == "md").unwrap_or(false) {
                             match std::fs::read_to_string(&path) {
                                 Ok(md) => match Skill::from_markdown(&md) {
-                                    Ok(s) => {
+                                    Ok(mut s) => {
+                                        s.source = SkillSource::User;
                                         log::info!("loaded user skill: {}", s.name);
                                         out.push(s);
                                     }

@@ -48,6 +48,10 @@ pub fn run() {
             commands::dict_remove,
             commands::settings_get,
             commands::settings_set,
+            commands::skill_list,
+            commands::models_list,
+            commands::model_activate,
+            commands::model_download,
         ])
         .plugin(
             tauri_plugin_log::Builder::new()

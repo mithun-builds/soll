@@ -97,15 +97,7 @@ pub fn build_tray(app: &AppHandle) -> Result<()> {
             match id {
                 "quit" => app.exit(0),
                 "settings" => open_settings_window(app),
-                "dictionary" => open_dictionary_window(app),
-                "legend" => open_legend_window(app),
-                other => {
-                    if let Some(model) = parse_model_id(other, "model.") {
-                        handle_active_model_click(app, model);
-                    } else if let Some(model) = parse_model_id(other, "download.") {
-                        handle_download_click(app, model);
-                    }
-                }
+                _ => {}
             }
         })
         .build(app)?;
@@ -209,7 +201,15 @@ pub fn open_legend_window(app: &AppHandle) {
 }
 
 pub fn open_settings_window(app: &AppHandle) {
-    open_window(app, "settings", "Svara — Settings", 560.0, 720.0);
+    open_window(app, "settings", "Svara — Settings", 860.0, 640.0);
+}
+
+/// Public for commands that need to refresh the tray after model state
+/// changes. Settings-window initiated downloads use this to flip UI
+/// indicators without going through the tray submenu.
+pub fn refresh_settings_ui(_app: &AppHandle) {
+    // Placeholder for future tauri event emission ("models_changed").
+    // Settings window currently polls via settings_get / models_list.
 }
 
 // ── menu construction ──────────────────────────────────────────────────────
@@ -232,9 +232,6 @@ fn build_menu(app: &AppHandle) -> Result<Menu<Wry>> {
         None::<&str>,
     )?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-    let dictionary = MenuItem::with_id(app, "dictionary", "Dictionary…", true, None::<&str>)?;
-    let legend = MenuItem::with_id(app, "legend", "Status Legend…", true, None::<&str>)?;
-    let model_submenu = build_model_submenu(app)?;
     let sep = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Svara", true, Some("Cmd+Q"))?;
 
@@ -245,9 +242,6 @@ fn build_menu(app: &AppHandle) -> Result<Menu<Wry>> {
             &hotkey_item,
             &sep,
             &settings,
-            &dictionary,
-            &legend,
-            &model_submenu,
             &sep,
             &quit,
         ],

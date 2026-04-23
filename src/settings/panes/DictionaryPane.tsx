@@ -7,7 +7,7 @@ type DictEntry = {
   added_at: string;
 };
 
-export function DictionaryApp() {
+export function DictionaryPane() {
   const [entries, setEntries] = useState<DictEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [input, setInput] = useState("");
@@ -53,50 +53,46 @@ export function DictionaryApp() {
   };
 
   return (
-    <div className="dict">
-      <header className="dict-header">
-        <h1>Dictionary</h1>
-        <p className="subtle">
-          Names, jargon, and specific terms Svara should always get right.
-        </p>
-        <p className="dict-hint">
-          Type each term in the <strong>exact casing</strong> you want
-          pasted. <code>GrowthBook</code> and <code>Growthbook</code> are
-          different entries — whatever you type here is what appears in
-          your text.
-        </p>
-      </header>
+    <>
+      <h1>Dictionary</h1>
+      <p className="subtle">
+        Names, jargon, and specific terms Svara should always spell correctly.
+      </p>
+      <p className="hint-callout">
+        Type each term in the <strong>exact casing</strong> you want pasted.
+        <code>GrowthBook</code> and <code>Growthbook</code> are different
+        entries — whatever you type here is what appears in your text.
+      </p>
 
-      <form className="dict-add" onSubmit={onAdd}>
+      <form className="pane-section dict-add" onSubmit={onAdd}>
         <input
           autoFocus
           type="text"
-          placeholder="Add a word (e.g. Homelane, Vrishti, GrowthBook)"
+          placeholder="Add a word (e.g. HomeLane, Vrishti, GrowthBook)"
           value={input}
           onChange={(e) => setInput(e.target.value)}
         />
-        <button type="submit" disabled={!input.trim()}>
+        <button type="submit" className="primary" disabled={!input.trim()}>
           Add
         </button>
       </form>
 
-      {error && <div className="dict-error">{error}</div>}
+      {error && <div className="pane-error">{error}</div>}
 
       {loading ? (
-        <div className="dict-loading">Loading…</div>
+        <div className="pane-loading">Loading…</div>
       ) : entries.length === 0 ? (
-        <div className="dict-empty">
-          No words yet. Add your first term above — it will be injected into
-          Whisper's decoding prompt and preserved through AI cleanup.
+        <div className="empty-hint">
+          No words yet. Add your first term above.
         </div>
       ) : (
-        <ul className="dict-list">
+        <ul className="row-list">
           {entries.map((e) => (
-            <li key={e.word}>
-              <span className="dict-word">{e.word}</span>
-              <span className="dict-meta">weight {e.weight}</span>
+            <li key={e.word} className="row">
+              <span className="row-title">{e.word}</span>
+              <span className="subtle">weight {e.weight}</span>
               <button
-                className="dict-remove"
+                className="icon-button danger"
                 onClick={() => onRemove(e.word)}
                 title="Remove"
               >
@@ -107,11 +103,9 @@ export function DictionaryApp() {
         </ul>
       )}
 
-      <footer className="dict-footer">
-        <div className="subtle">
-          {entries.length} {entries.length === 1 ? "entry" : "entries"}
-        </div>
-      </footer>
-    </div>
+      <div className="subtle hint">
+        {entries.length} {entries.length === 1 ? "entry" : "entries"}
+      </div>
+    </>
   );
 }
