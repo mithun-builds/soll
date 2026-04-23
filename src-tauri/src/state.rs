@@ -534,15 +534,31 @@ impl AppState {
 
             let final_text = if let Some(instructions) = &skill.instructions {
                 // ── New-style skill: plain-English instructions ──────────────
-                // Auto-append user name + transcription so the user never has
-                // to write [body] or [name] in their skill file.
+                // Build context block. If the classifier extracted structured
+                // vars (e.g. recipient + body for email), use those so the
+                // instructions LLM gets clean inputs, not the raw trigger phrase.
                 if ai_on {
                     let mut prompt = instructions.clone();
                     prompt.push_str("\n\n---\n");
                     if !user_name.is_empty() {
                         prompt.push_str(&format!("User's name: {user_name}\n"));
                     }
-                    prompt.push_str(&format!("What they said: {raw}"));
+                    // Filter out internal vars we injected; keep only what the
+                    // classifier extracted from the utterance.
+                    let extracted: Vec<(&String, &String)> = vars
+                        .iter()
+                        .filter(|(k, _)| k.as_str() != "name")
+                        .collect();
+                    if extracted.is_empty() {
+                        // No structured extraction — send the raw utterance
+                        prompt.push_str(&format!("What they said: {raw}"));
+                    } else {
+                        // Structured extraction available — send clean fields
+                        for (k, v) in &extracted {
+                            prompt.push_str(&format!("{k}: {v}\n"));
+                        }
+                        let _ = prompt.trim_end_matches('\n');
+                    }
 
                     match self.ollama.generate(&prompt, 1024).await {
                         Ok(s) => strip_llm_preamble(&s),
