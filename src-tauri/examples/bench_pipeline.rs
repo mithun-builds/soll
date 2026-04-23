@@ -138,6 +138,10 @@ async fn main() -> Result<()> {
     ensure_metal_resources();
     let args = parse_args().inspect_err(|_| print_usage())?;
 
+    // NOTE: the benchmark does not exercise the per-model downloader (that
+    // is Tauri-bound via AppHandle). It expects `--model` or the default
+    // base.en path to already exist on disk.
+
     // 1. Load and normalize the WAV to 16 kHz mono f32
     let (samples, audio_ms) = load_wav_to_16k_mono(&args.wav)
         .with_context(|| format!("loading {}", args.wav.display()))?;
