@@ -49,14 +49,22 @@ pub fn detect(raw: &str) -> Option<EmailIntent> {
 ///
 ///   {sign_off}[,]
 ///   [{user_name}]
+///
+/// Runs a deterministic capitalization pass on the body first so emails
+/// always come out looking like emails — even when Ollama is disabled
+/// or a polish pass slipped. Covers:
+///   - Sentence starts (first char of body + after . ! ?)
+///   - Weekdays (Monday–Sunday + abbrevs)
+///   - Months (January–December + abbrevs)
+///   - Pronoun "I"
 pub fn format(intent: &EmailIntent, polished_body: &str, sign_off: &str, user_name: &str) -> String {
-    let body = polished_body.trim();
+    let body = polish_email_body(polished_body.trim());
     let sign_off = sign_off.trim();
     let user_name = user_name.trim();
 
     let mut out = String::new();
     out.push_str(&format!("Hi {},\n\n", intent.recipient));
-    out.push_str(body);
+    out.push_str(&body);
     out.push_str("\n\n");
     if sign_off.is_empty() {
         out.push_str("Best,");
@@ -69,6 +77,68 @@ pub fn format(intent: &EmailIntent, polished_body: &str, sign_off: &str, user_na
         out.push_str(user_name);
     }
     out
+}
+
+fn polish_email_body(body: &str) -> String {
+    let mut out = capitalize_sentences(body);
+    out = capitalize_proper_nouns(&out);
+    out = capitalize_pronoun_i(&out);
+    out
+}
+
+/// Uppercase the first alphabetic character of each sentence. Sentences
+/// are delimited by `.`, `!`, `?`, or the start of the body.
+fn capitalize_sentences(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut capitalize_next = true;
+    for c in s.chars() {
+        if capitalize_next && c.is_alphabetic() {
+            out.extend(c.to_uppercase());
+            capitalize_next = false;
+        } else {
+            out.push(c);
+        }
+        if matches!(c, '.' | '!' | '?') {
+            capitalize_next = true;
+        }
+    }
+    out
+}
+
+static PROPER_RE: Lazy<Regex> = Lazy::new(|| {
+    let words = [
+        // Weekdays
+        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+        "mon", "tue", "tues", "wed", "thu", "thur", "thurs", "fri", "sat", "sun",
+        // Months
+        "january", "february", "march", "april", "may", "june", "july",
+        "august", "september", "october", "november", "december",
+        "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+    ];
+    let pat = format!(r"(?i)\b({})\b", words.join("|"));
+    Regex::new(&pat).unwrap()
+});
+
+fn capitalize_proper_nouns(s: &str) -> String {
+    PROPER_RE
+        .replace_all(s, |caps: &regex::Captures| {
+            let m = caps.get(0).unwrap().as_str();
+            let mut chars = m.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => {
+                    let rest: String = chars.collect::<String>().to_lowercase();
+                    format!("{}{}", first.to_uppercase(), rest)
+                }
+            }
+        })
+        .to_string()
+}
+
+static PRONOUN_I_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bi\b").unwrap());
+
+fn capitalize_pronoun_i(s: &str) -> String {
+    PRONOUN_I_RE.replace_all(s, "I").to_string()
 }
 
 /// Words that would otherwise get captured as "recipient" when the user
@@ -172,5 +242,65 @@ mod tests {
         };
         let out = format(&intent, "Hi.", "", "Bob");
         assert_eq!(out, "Hi Alice,\n\nHi.\n\nBest,\nBob");
+    }
+
+    // ── deterministic capitalization ──────────────────────────
+
+    #[test]
+    fn capitalizes_sentence_start() {
+        let intent = EmailIntent {
+            recipient: "Jane".into(),
+            body_raw: "ignored".into(),
+        };
+        let out = format(&intent, "can we push the launch to friday.", "Best", "Mithun");
+        assert_eq!(
+            out,
+            "Hi Jane,\n\nCan we push the launch to Friday.\n\nBest,\nMithun"
+        );
+    }
+
+    #[test]
+    fn capitalizes_multiple_sentences() {
+        let intent = EmailIntent {
+            recipient: "John".into(),
+            body_raw: "ignored".into(),
+        };
+        let out = format(
+            &intent,
+            "hey. can you review by wednesday? thanks.",
+            "Best",
+            "",
+        );
+        assert_eq!(
+            out,
+            "Hi John,\n\nHey. Can you review by Wednesday? Thanks.\n\nBest,"
+        );
+    }
+
+    #[test]
+    fn capitalizes_weekdays_and_months() {
+        let intent = EmailIntent {
+            recipient: "Sam".into(),
+            body_raw: "ignored".into(),
+        };
+        let out = format(
+            &intent,
+            "meeting on monday in january please.",
+            "Best",
+            "",
+        );
+        assert!(out.contains("Monday"));
+        assert!(out.contains("January"));
+    }
+
+    #[test]
+    fn capitalizes_pronoun_i() {
+        let intent = EmailIntent {
+            recipient: "Liz".into(),
+            body_raw: "ignored".into(),
+        };
+        let out = format(&intent, "i was thinking we could meet tuesday.", "Best", "");
+        assert!(out.contains("I was"));
+        assert!(out.contains("Tuesday"));
     }
 }
