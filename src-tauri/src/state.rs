@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use log::{info, warn};
 use parking_lot::Mutex;
 use tauri::{AppHandle, Manager};
@@ -26,10 +26,19 @@ pub struct AppState {
     pub settings: Arc<Settings>,
     /// Currently-loaded whisper model, kept in sync with the Transcriber.
     current_model: Mutex<WhisperModel>,
-    /// Bumped on every `switch_model` call. In-flight downloads poll this
-    /// between chunks and abort if it diverges from their captured value,
-    /// so picking a new model mid-download instantly cancels the old one.
-    switch_epoch: std::sync::atomic::AtomicU64,
+    /// Most recent model the user clicked in the submenu. A background
+    /// download auto-activates only if this still equals the downloaded
+    /// model — otherwise the download silently becomes a cache entry for
+    /// later use.
+    pending_target: Mutex<WhisperModel>,
+    /// Model currently being downloaded (if any). Used to dedupe repeat
+    /// clicks and to know whether starting a new download should cancel
+    /// a running one.
+    downloading: Mutex<Option<WhisperModel>>,
+    /// Bumped whenever a NEW download starts. In-flight downloads poll
+    /// this between chunks and abort on divergence. Cached-model swaps
+    /// do NOT bump it — ongoing downloads continue unaffected.
+    download_epoch: std::sync::atomic::AtomicU64,
     recorder: Mutex<Option<AudioRecorder>>,
     transcriber: AsyncMutex<Option<Arc<Transcriber>>>,
     /// Held exclusively during model swaps so dictations don't start on a
@@ -62,7 +71,9 @@ impl AppState {
             dictionary: dict,
             settings,
             current_model: Mutex::new(model),
-            switch_epoch: std::sync::atomic::AtomicU64::new(0),
+            pending_target: Mutex::new(model),
+            downloading: Mutex::new(None),
+            download_epoch: std::sync::atomic::AtomicU64::new(0),
             recorder: Mutex::new(None),
             transcriber: AsyncMutex::new(None),
             swap_guard: AsyncMutex::new(()),
@@ -73,6 +84,21 @@ impl AppState {
 
     pub fn current_model(&self) -> WhisperModel {
         *self.current_model.lock()
+    }
+
+    /// Synchronous cache check — used by the tray handler to decide whether
+    /// the swap can be foreground (cached, <1 s) or must be background
+    /// (needs a download). `std::fs::metadata` is stat-level fast.
+    pub fn is_model_cached(&self, model: WhisperModel) -> bool {
+        let dir = match self.app.path().app_data_dir() {
+            Ok(d) => d.join("models"),
+            Err(_) => return false,
+        };
+        let path = dir.join(model.filename());
+        let min_size = model.expected_size_bytes() * 9 / 10;
+        std::fs::metadata(&path)
+            .map(|m| m.len() >= min_size)
+            .unwrap_or(false)
     }
 
     fn set_tray(&self, state: TrayState) {
@@ -91,75 +117,171 @@ impl AppState {
             me.ollama.warm_up().await;
         });
 
-        use std::sync::atomic::Ordering;
-        let my_epoch = self.switch_epoch.fetch_add(1, Ordering::SeqCst) + 1;
-        self.load_model(model, my_epoch).await
+        // Boot-time load: always foreground (no existing transcriber to
+        // fall back on), always honored (no concurrent user picks yet).
+        if self.is_model_cached(model) {
+            self.clone().load_and_swap(model, None, true).await
+        } else {
+            use std::sync::atomic::Ordering;
+            let my_epoch = self.download_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+            *self.downloading.lock() = Some(model);
+            let result = self.clone().load_and_swap(model, Some(my_epoch), true).await;
+            let mut dl = self.downloading.lock();
+            if *dl == Some(model) {
+                *dl = None;
+            }
+            result
+        }
     }
 
-    /// Switch to a different model. Downloads if not cached; loads + warms;
-    /// swaps atomically. Bumps `switch_epoch` so any in-flight download
-    /// aborts on its next chunk. Blocks on `swap_guard` so concurrent
-    /// dictations can't observe a half-loaded state.
+    /// Switch to a different model.
+    ///
+    /// Behavior depends on whether the model is already on disk:
+    ///
+    /// - **Cached model** → quick foreground swap (<1 s). Does NOT cancel
+    ///   any in-flight background download; that keeps running so the
+    ///   user doesn't lose progress.
+    /// - **Uncached model** → spawn a background download. The user can
+    ///   keep dictating with the current model. When the download finishes,
+    ///   the new model auto-activates *iff* the user hasn't clicked
+    ///   something else in the meantime (`pending_target`). Otherwise it's
+    ///   silently cached for later.
+    /// - **Repeat click on the model already downloading** → no-op. Just
+    ///   updates the intent marker.
+    /// - **New uncached click while a different model is downloading** →
+    ///   cancels the in-flight download and starts the new one.
     pub async fn switch_model(self: Arc<Self>, model: WhisperModel) -> Result<()> {
-        use std::sync::atomic::Ordering;
-        let my_epoch = self.switch_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+        *self.pending_target.lock() = model;
+
         if model == self.current_model() && self.transcriber.lock().await.is_some() {
             info!("switch_model: {} already active", model.id());
             return Ok(());
         }
-        info!("switch_model -> {} (epoch={my_epoch})", model.id());
-        self.load_model(model, my_epoch).await?;
-        self.settings
-            .set(KEY_WHISPER_MODEL, model.id())
-            .context("persist whisper_model setting")?;
-        Ok(())
+
+        if self.is_model_cached(model) {
+            info!("switch_model -> {} (cached, foreground swap)", model.id());
+            self.clone().load_and_swap(model, /*epoch=*/ None, true).await
+        } else {
+            // Check if this model is already being downloaded — avoid
+            // cancel-and-restart on repeat clicks.
+            {
+                let mut dl = self.downloading.lock();
+                if *dl == Some(model) {
+                    info!(
+                        "switch_model -> {} (already downloading; pending only)",
+                        model.id()
+                    );
+                    return Ok(());
+                }
+                *dl = Some(model);
+            }
+            // Cancel any previous download and stamp a new epoch.
+            use std::sync::atomic::Ordering;
+            let my_epoch = self.download_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+            info!(
+                "switch_model -> {} (background download, epoch={my_epoch})",
+                model.id()
+            );
+            let me = self.clone();
+            tauri::async_runtime::spawn(async move {
+                let result = me.clone().load_and_swap(model, Some(my_epoch), false).await;
+                // Clear the downloading flag if it's still us. A newer
+                // download may have overwritten it — in that case leave
+                // it alone.
+                {
+                    let mut dl = me.downloading.lock();
+                    if *dl == Some(model) {
+                        *dl = None;
+                    }
+                }
+                if let Err(e) = result {
+                    if !e.to_string().contains(CANCELLED_MSG) {
+                        log::error!("background load {}: {e:?}", model.id());
+                    }
+                }
+            });
+            Ok(())
+        }
     }
 
-    /// Core load routine used by both warm_up and switch_model. `epoch` is
-    /// the switch generation we were spawned for; if the global epoch
-    /// advances before we finish, we bail out early without touching the
-    /// live transcriber.
-    async fn load_model(self: &Arc<Self>, model: WhisperModel, epoch: u64) -> Result<()> {
+    /// Core load routine.
+    ///
+    /// `epoch`:
+    /// - `Some(e)` — in-flight download; polls `download_epoch` and aborts
+    ///   if it diverges (the user started a different download).
+    /// - `None` — cached-path swap; no cancellation check (nothing is
+    ///   actually downloading).
+    ///
+    /// `foreground` controls whether the tray icon enters the Loading
+    /// state during the download phase. Cached swaps are foreground;
+    /// background downloads stay out of the way so dictation continues.
+    ///
+    /// Before committing the swap we check `pending_target` — if the user
+    /// moved on to a different model during this load, the downloaded/
+    /// reloaded model is silently cached for future use and not activated.
+    async fn load_and_swap(
+        self: Arc<Self>,
+        model: WhisperModel,
+        epoch: Option<u64>,
+        foreground: bool,
+    ) -> Result<()> {
         use std::sync::atomic::Ordering;
 
         let _swap = self.swap_guard.lock().await;
-        // Another switch may have run while we waited on the lock — bail
-        // before we start any IO.
-        if self.switch_epoch.load(Ordering::SeqCst) != epoch {
-            info!("load_model({}) superseded before lock acquired", model.id());
-            return Ok(());
+        if let Some(e) = epoch {
+            if self.download_epoch.load(Ordering::SeqCst) != e {
+                info!("load_and_swap({}) superseded before lock", model.id());
+                return Ok(());
+            }
         }
         let t0 = std::time::Instant::now();
-        self.set_tray(TrayState::Loading);
+
+        if foreground {
+            self.set_tray(TrayState::Loading);
+        }
 
         let me_progress = self.clone();
         let me_wanted = self.clone();
+        let still_wanted_epoch = epoch;
         let path_result = ensure_model(
             &self.app,
             model,
             move |done, total| me_progress.report_download_progress(model, done, total),
-            move || me_wanted.switch_epoch.load(Ordering::SeqCst) == epoch,
+            move || match still_wanted_epoch {
+                Some(e) => me_wanted.download_epoch.load(Ordering::SeqCst) == e,
+                None => true,
+            },
         )
         .await;
         let path = match path_result {
             Ok(p) => p,
             Err(e) => {
-                let msg = e.to_string();
-                if msg.contains(CANCELLED_MSG) {
-                    info!("load_model({}) cancelled mid-download", model.id());
+                if e.to_string().contains(CANCELLED_MSG) {
+                    info!("load_and_swap({}) cancelled mid-download", model.id());
                     tray::set_title(&self.app, None);
-                    // Leave the tray in Loading — a newer load_model is
-                    // already queued behind us and will take over.
                     return Ok(());
                 }
                 return Err(e);
             }
         };
-        // Download finished (or cache hit). The next phase (whisper file
-        // load + Metal kernel warm) takes 0.5–2 s depending on model size.
-        // Show a visible indicator in the menu bar so the user knows why
-        // the blue dot is still blinking — otherwise a cached swap feels
-        // like it hangs.
+
+        // Before doing the expensive whisper load, check whether the user
+        // still wants this model. They may have clicked something else
+        // during the download; if so, just leave the file on disk cached
+        // for next time.
+        if *self.pending_target.lock() != model {
+            info!(
+                "load_and_swap({}): download done but pending_target is now {}; caching only",
+                model.id(),
+                self.pending_target.lock().id()
+            );
+            tray::set_title(&self.app, None);
+            return Ok(());
+        }
+
+        if !foreground {
+            self.set_tray(TrayState::Loading);
+        }
         tray::set_title(&self.app, Some(&format!(" ⟳ {}", model.id())));
         tray::set_status_text(&format!("Loading {}…", model.id()));
         info!(
@@ -172,24 +294,41 @@ impl AppState {
         let model_id = model.id();
         let transcriber = tokio::task::spawn_blocking(move || -> Result<Transcriber> {
             let t = Transcriber::load(&path)?;
-            info!("{} loaded in {:?}; warming Metal kernels…", model_id, t_load_start.elapsed());
+            info!(
+                "{} loaded in {:?}; warming Metal kernels…",
+                model_id,
+                t_load_start.elapsed()
+            );
             let t_warm = std::time::Instant::now();
             t.warm()?;
-            info!("{} Metal kernels compiled in {:?}", model_id, t_warm.elapsed());
+            info!(
+                "{} Metal kernels compiled in {:?}",
+                model_id,
+                t_warm.elapsed()
+            );
             Ok(t)
         })
         .await
         .map_err(|e| anyhow!("join error: {e}"))??;
 
-        // Final epoch check before swap — if the user clicked elsewhere
-        // while Metal was compiling, don't clobber with a stale model.
-        if self.switch_epoch.load(Ordering::SeqCst) != epoch {
-            info!("load_model({}) superseded after whisper load", model.id());
+        // Final pending-target check — during Metal warm (~1 s) the user
+        // may have clicked elsewhere.
+        if *self.pending_target.lock() != model {
+            info!(
+                "load_and_swap({}): whisper loaded but pending_target moved to {}; discarding",
+                model.id(),
+                self.pending_target.lock().id()
+            );
+            tray::set_title(&self.app, None);
+            // Restore the tray to whatever the foreground state wants.
+            self.set_tray(TrayState::Idle);
             return Ok(());
         }
 
         *self.transcriber.lock().await = Some(Arc::new(transcriber));
         *self.current_model.lock() = model;
+        tray::update_model_check(model);
+        let _ = self.settings.set(KEY_WHISPER_MODEL, model.id());
         info!("{} fully ready in {:?}", model.id(), t0.elapsed());
         self.set_tray(TrayState::Idle);
         Ok(())
