@@ -4,7 +4,6 @@ import { invoke } from "@tauri-apps/api/core";
 type Snapshot = {
   user_name: string;
   ai_cleanup_enabled: boolean;
-  email_sign_off: string;
   whisper_model: string;
   dictionary_count: number;
 };
@@ -12,13 +11,11 @@ type Snapshot = {
 type Update = {
   user_name?: string;
   ai_cleanup_enabled?: boolean;
-  email_sign_off?: string;
 };
 
 export function GeneralPane() {
   const [s, setS] = useState<Snapshot | null>(null);
   const [userNameDraft, setUserNameDraft] = useState("");
-  const [signOffDraft, setSignOffDraft] = useState("");
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">(
     "idle",
   );
@@ -29,7 +26,6 @@ export function GeneralPane() {
       const snap = await invoke<Snapshot>("settings_get");
       setS(snap);
       setUserNameDraft(snap.user_name);
-      setSignOffDraft(snap.email_sign_off);
     } catch (e) {
       setErr(String(e));
     }
@@ -55,7 +51,7 @@ export function GeneralPane() {
 
   const onSaveText = async (e: FormEvent) => {
     e.preventDefault();
-    await update({ user_name: userNameDraft, email_sign_off: signOffDraft });
+    await update({ user_name: userNameDraft });
   };
 
   if (!s) {
@@ -67,32 +63,20 @@ export function GeneralPane() {
   return (
     <>
       <h1>General</h1>
-      <p className="subtle">Identity + AI behavior across every dictation.</p>
+      <p className="subtle">Your identity + AI behavior across every dictation.</p>
 
       <form className="pane-section" onSubmit={onSaveText}>
         <label>
           <span className="field-label">Your name</span>
           <span className="subtle hint">
-            Appears at the bottom of dictated emails.
+            Appears at the bottom of dictated emails and can be referenced in
+            custom skills.
           </span>
           <input
             type="text"
             placeholder="e.g. Mithun"
             value={userNameDraft}
             onChange={(e) => setUserNameDraft(e.target.value)}
-          />
-        </label>
-
-        <label>
-          <span className="field-label">Email sign-off</span>
-          <span className="subtle hint">
-            Word before your name. Common: Best, Thanks, Regards, Cheers.
-          </span>
-          <input
-            type="text"
-            placeholder="Best"
-            value={signOffDraft}
-            onChange={(e) => setSignOffDraft(e.target.value)}
           />
         </label>
 
@@ -133,6 +117,8 @@ export function GeneralPane() {
           <code>⌃⇧Space</code>
         </div>
         <p className="subtle hint">
+          Email sign-off now lives inside the Email skill's output template.
+          Change it in <strong>Skills → email → Edit markdown</strong>.
           Hotkey rebinding is planned for a future update.
         </p>
       </div>

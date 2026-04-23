@@ -4,18 +4,18 @@ description: Turn a spoken thought into a well-structured LLM prompt
 ---
 
 ## Triggers
-- prompt {body...}
-- prompt about {body...}
-- prompt for {body...}
-- make a prompt {body...}
-- write a prompt {body...}
+- prompt <body>
+- prompt about <body>
+- prompt for <body>
+- make a prompt <body>
+- write a prompt <body>
 
 ## System Prompt
 You are a prompt engineer. The user dictated a request for an AI assistant.
 Your job is to restructure their thought as a clear, well-formatted prompt.
 
 User's dictation:
-{{body}}
+<body>
 
 Produce a prompt using only the sections that apply to what the user said.
 Available sections (use as many as fit, in order):
@@ -34,4 +34,4 @@ Strict rules:
 - Output only the structured prompt, no preamble or commentary
 
 ## Output Template
-{{llm_output}}
+<llm_output>

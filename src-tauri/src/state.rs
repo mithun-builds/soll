@@ -17,14 +17,37 @@ use crate::formatter::{self, Format};
 use crate::model::{ensure_model, WhisperModel, CANCELLED_MSG};
 use crate::paste::paste_text;
 use crate::settings::{
-    Settings, DEFAULT_AI_CLEANUP, DEFAULT_SIGN_OFF, KEY_AI_CLEANUP, KEY_EMAIL_SIGN_OFF,
-    KEY_USER_NAME, KEY_WHISPER_MODEL,
+    Settings, DEFAULT_AI_CLEANUP, KEY_AI_CLEANUP, KEY_USER_NAME, KEY_WHISPER_MODEL,
 };
 use crate::skills::{self, Skill};
 use crate::transcribe::Transcriber;
 use crate::tray::{self, TrayState};
 
 static DICTATION_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// The email skill's Output Template is the source of truth for the
+/// sign-off word. Pull the last word on the sign-off line (second-to-
+/// last content line, ending with a comma) out of the template. Falls
+/// back to "Best" if the template doesn't match the expected shape.
+fn email_sign_off_from_skill(skills: &[Skill]) -> String {
+    const DEFAULT: &str = "Best";
+    let email = match skills.iter().find(|s| s.name == "email") {
+        Some(s) => s,
+        None => return DEFAULT.to_string(),
+    };
+    // Skim the Output Template for a non-empty line ending in `,` —
+    // that's the sign-off line. Strip the comma and any surrounding spaces.
+    for line in email.output_template.lines().rev() {
+        let trimmed = line.trim();
+        if let Some(before_comma) = trimmed.strip_suffix(',') {
+            let s = before_comma.trim();
+            if !s.is_empty() {
+                return s.to_string();
+            }
+        }
+    }
+    DEFAULT.to_string()
+}
 
 pub struct AppState {
     pub app: AppHandle,
@@ -400,7 +423,6 @@ impl AppState {
 
         let preserve_terms: Vec<String> = dict_words.into_iter().map(|e| e.word).collect();
         let user_name = self.settings.get_or_default(KEY_USER_NAME, "");
-        let sign_off = self.settings.get_or_default(KEY_EMAIL_SIGN_OFF, DEFAULT_SIGN_OFF);
         let ai_on_global = self
             .settings
             .get(KEY_AI_CLEANUP)
@@ -430,7 +452,6 @@ impl AppState {
                 // Generic markdown skill: system prompt through Ollama
                 // (if enabled), wrap in output template, done.
                 vars.insert("user_name".into(), user_name.clone());
-                vars.insert("sign_off".into(), sign_off.clone());
                 let system_prompt = skill.interpolate(&skill.system_prompt, &vars);
                 let t_ollama_start = Instant::now();
                 let llm_output = if ai_on_global {
@@ -528,7 +549,10 @@ impl AppState {
         };
 
         // Wrap polished body in email template if that's the detected intent.
+        // Sign-off lives in the email skill's markdown now, so we read it
+        // from the loaded skill's output template rather than a setting.
         let after_corrections = if let Some(intent) = &email_intent {
+            let sign_off = email_sign_off_from_skill(&self.skills.lock());
             info!(
                 "[latency #{n}] email mode → recipient={}, sign_off={}, user_name={}",
                 intent.recipient,

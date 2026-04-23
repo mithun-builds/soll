@@ -505,11 +505,11 @@ button.danger-btn:hover {
   border-radius: 4px;
   font-weight: 500;
 }
-.badge.builtin {
+.badge.default {
   background: rgba(56, 189, 248, 0.14);
   color: #7dd3fc;
 }
-.badge.user {
+.badge.custom {
   background: rgba(253, 224, 71, 0.14);
   color: var(--accent);
 }

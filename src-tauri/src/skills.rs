@@ -67,15 +67,17 @@ pub struct TriggerPattern {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillSource {
+    /// Ships with the app. Rendered as "default" in the UI.
     Builtin,
+    /// Saved by the user into the skills directory. Rendered as "custom".
     User,
 }
 
 impl SkillSource {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Builtin => "builtin",
-            Self::User => "user",
+            Self::Builtin => "default",
+            Self::User => "custom",
         }
     }
 }
@@ -104,56 +106,63 @@ impl TriggerPattern {
             });
         }
 
-        // Simple-English template: split on whitespace, render each token
-        // as either a literal or a capture group. Join tokens with a
-        // flexible whitespace-or-punctuation separator so speech with
-        // different punctuation still matches.
-        let mut parts = Vec::new();
-        let mut capture_names = Vec::new();
-
+        // Plain-English template.
+        //
+        // Placeholders: `<name>` (preferred) or `{name}` (legacy).
+        // The LAST placeholder in the template is automatically greedy —
+        // it captures everything up to the end. Earlier placeholders
+        // capture a single word (letters/digits/hyphens/apostrophes).
+        //
+        // Literal words match case-insensitively with flexible whitespace
+        // and punctuation between them, so "email to Jane" / "email, to
+        // Jane." / "Email To Jane" all hit the same trigger.
+        let mut tokens: Vec<Token> = Vec::new();
         for tok in t.split_whitespace() {
-            if let Some(inner) = tok.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
-                let (raw_name, greedy) = match inner.strip_suffix("...") {
-                    Some(n) => (n, true),
-                    None => (inner, false),
-                };
-                let name = raw_name.trim();
+            if let Some(name) = placeholder_name(tok) {
                 if name.is_empty() {
-                    return Err(anyhow!("empty placeholder `{{...}}` in `{t}`"));
+                    return Err(anyhow!("empty placeholder in trigger `{t}`"));
                 }
                 if !name
                     .chars()
                     .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
                 {
                     return Err(anyhow!(
-                        "placeholder name must be alphanumeric (got `{name}`)"
+                        "placeholder name must be alphanumeric (got `<{name}>`)"
                     ));
                 }
-                if greedy {
-                    parts.push(r"(.+)".to_string());
-                } else {
-                    // Single-word: letters + digits + hyphen + apostrophe
-                    parts.push(r"([A-Za-z][A-Za-z0-9\-'_]*)".to_string());
-                }
-                capture_names.push(name.to_string());
+                tokens.push(Token::Placeholder(name.to_string()));
             } else {
-                // Literal: strip surrounding punctuation, escape the rest.
-                // That way "email," and "email" in a template both match
-                // "email" with optional trailing punctuation in speech.
                 let bare = tok.trim_matches(|c: char| !c.is_alphanumeric());
                 if bare.is_empty() {
                     continue;
                 }
-                parts.push(regex::escape(bare));
+                tokens.push(Token::Literal(bare.to_string()));
+            }
+        }
+        if tokens.is_empty() {
+            return Err(anyhow!("trigger `{t}` has no content"));
+        }
+        let last_placeholder_idx = tokens
+            .iter()
+            .rposition(|t| matches!(t, Token::Placeholder(_)));
+
+        let mut parts = Vec::new();
+        let mut capture_names = Vec::new();
+        for (i, tok) in tokens.iter().enumerate() {
+            match tok {
+                Token::Literal(w) => parts.push(regex::escape(w)),
+                Token::Placeholder(name) => {
+                    let is_last = Some(i) == last_placeholder_idx;
+                    if is_last {
+                        parts.push(r"(.+)".to_string());
+                    } else {
+                        parts.push(r"([A-Za-z][A-Za-z0-9\-'_]*)".to_string());
+                    }
+                    capture_names.push(name.clone());
+                }
             }
         }
 
-        if parts.is_empty() {
-            return Err(anyhow!("trigger `{t}` has no content"));
-        }
-
-        // Between every pair of parts, allow whitespace and/or one piece
-        // of punctuation. At both ends, allow leading/trailing padding.
         let body = parts.join(r"[\s,.?!;:]+");
         let pat = format!(r"(?i)^\s*{body}\s*[.?!]?\s*$");
         let regex = Regex::new(&pat).with_context(|| format!("compiling `{t}`"))?;
@@ -256,12 +265,7 @@ impl Skill {
     }
 
     pub fn interpolate(&self, template: &str, vars: &HashMap<String, String>) -> String {
-        let mut out = template.to_string();
-        for (k, v) in vars {
-            let needle = format!("{{{{{}}}}}", k);
-            out = out.replace(&needle, v);
-        }
-        out
+        interpolate(template, vars)
     }
 
     /// Human-readable trigger phrases for the UI.
@@ -336,6 +340,26 @@ pub fn load_all(user_dir: Option<&std::path::Path>) -> Vec<Skill> {
     out
 }
 
+/// Replace `<name>` and `{{name}}` placeholders with values from `vars`.
+/// Unknown placeholders are left untouched — so a system prompt that
+/// legitimately contains `<br>` isn't corrupted when there's no `br` var.
+pub fn interpolate(template: &str, vars: &HashMap<String, String>) -> String {
+    let angle = Regex::new(r"<([A-Za-z][A-Za-z0-9_\-]*)>").unwrap();
+    let out = angle
+        .replace_all(template, |caps: &regex::Captures| match vars.get(&caps[1]) {
+            Some(v) => v.clone(),
+            None => caps[0].to_string(),
+        })
+        .into_owned();
+    let curly = Regex::new(r"\{\{([A-Za-z][A-Za-z0-9_\-]*)\}\}").unwrap();
+    curly
+        .replace_all(&out, |caps: &regex::Captures| match vars.get(&caps[1]) {
+            Some(v) => v.clone(),
+            None => caps[0].to_string(),
+        })
+        .into_owned()
+}
+
 pub fn match_skill<'a>(
     skills: &'a [Skill],
     raw: &str,
@@ -346,6 +370,27 @@ pub fn match_skill<'a>(
         }
     }
     None
+}
+
+// ── template internals ─────────────────────────────────────────────────────
+
+enum Token {
+    Literal(String),
+    Placeholder(String),
+}
+
+/// Accept `<name>` (preferred) or `{name}` (legacy) and optionally strip a
+/// trailing `...` for back-compat with the old greedy suffix. Returns just
+/// the bare name when the token is a placeholder, None otherwise.
+fn placeholder_name(tok: &str) -> Option<&str> {
+    let inner = if let Some(s) = tok.strip_prefix('<').and_then(|s| s.strip_suffix('>')) {
+        s
+    } else if let Some(s) = tok.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+        s
+    } else {
+        return None;
+    };
+    Some(inner.strip_suffix("...").unwrap_or(inner).trim())
 }
 
 // ── markdown helpers ───────────────────────────────────────────────────────
@@ -401,8 +446,8 @@ mod tests {
     // ── template compiler ──────────────────────────────────────
 
     #[test]
-    fn compiles_simple_template() {
-        let p = TriggerPattern::compile("email to {recipient} {body...}").unwrap();
+    fn compiles_angle_bracket_template() {
+        let p = TriggerPattern::compile("email to <recipient> <body>").unwrap();
         let vars = p
             .match_vars("email to Jane can we push the launch")
             .unwrap();
@@ -414,42 +459,58 @@ mod tests {
     }
 
     #[test]
-    fn handles_hyphenated_names() {
+    fn legacy_curly_template_still_works() {
         let p = TriggerPattern::compile("email to {recipient} {body...}").unwrap();
+        let vars = p
+            .match_vars("email to Jane hello world")
+            .unwrap();
+        assert_eq!(vars.get("recipient").unwrap(), "Jane");
+        assert_eq!(vars.get("body").unwrap(), "hello world");
+    }
+
+    #[test]
+    fn last_placeholder_is_automatically_greedy() {
+        // No `...` suffix; the LAST placeholder still captures the rest.
+        let p = TriggerPattern::compile("prompt <thought>").unwrap();
+        let vars = p.match_vars("prompt write a python script that parses csv").unwrap();
+        assert_eq!(
+            vars.get("thought").unwrap(),
+            "write a python script that parses csv"
+        );
+    }
+
+    #[test]
+    fn non_last_placeholder_is_one_word() {
+        let p = TriggerPattern::compile("email to <recipient> <body>").unwrap();
+        let vars = p.match_vars("email to Mary-Jane the plan is").unwrap();
+        assert_eq!(vars.get("recipient").unwrap(), "Mary-Jane");
+    }
+
+    #[test]
+    fn handles_hyphenated_names() {
+        let p = TriggerPattern::compile("email to <recipient> <body>").unwrap();
         let vars = p.match_vars("email to Mary-Jane hello").unwrap();
         assert_eq!(vars.get("recipient").unwrap(), "Mary-Jane");
     }
 
     #[test]
     fn handles_apostrophes() {
-        let p = TriggerPattern::compile("email to {recipient} {body...}").unwrap();
+        let p = TriggerPattern::compile("email to <recipient> <body>").unwrap();
         let vars = p.match_vars("email to O'Brien meeting today").unwrap();
         assert_eq!(vars.get("recipient").unwrap(), "O'Brien");
     }
 
     #[test]
     fn flexible_punctuation_between_literals() {
-        let p = TriggerPattern::compile("email to {recipient} {body...}").unwrap();
+        let p = TriggerPattern::compile("email to <recipient> <body>").unwrap();
         assert!(p.match_vars("email, to Jane hello").is_some());
         assert!(p.match_vars("email. to Jane hello").is_some());
         assert!(p.match_vars("email to, Jane, hello").is_some());
     }
 
     #[test]
-    fn greedy_placeholder_captures_rest() {
-        let p = TriggerPattern::compile("prompt {body...}").unwrap();
-        let vars = p
-            .match_vars("prompt write a python script that parses csv")
-            .unwrap();
-        assert_eq!(
-            vars.get("body").unwrap(),
-            "write a python script that parses csv"
-        );
-    }
-
-    #[test]
     fn case_insensitive_match() {
-        let p = TriggerPattern::compile("email to {recipient} {body...}").unwrap();
+        let p = TriggerPattern::compile("email to <recipient> <body>").unwrap();
         assert!(p
             .match_vars("EMAIL TO jane HELLO WORLD")
             .is_some());
@@ -457,7 +518,28 @@ mod tests {
 
     #[test]
     fn rejects_empty_placeholder_name() {
-        assert!(TriggerPattern::compile("email {} body").is_err());
+        assert!(TriggerPattern::compile("email <> body").is_err());
+    }
+
+    #[test]
+    fn interpolation_angle_brackets() {
+        let mut vars = HashMap::new();
+        vars.insert("a".into(), "hello".into());
+        vars.insert("b".into(), "world".into());
+        assert_eq!(
+            interpolate("Greet <a>, say <b>!", &vars),
+            "Greet hello, say world!"
+        );
+    }
+
+    #[test]
+    fn interpolation_leaves_unknown_angles_alone() {
+        let vars = HashMap::new();
+        // <br> looks like a placeholder but has no variable — must stay.
+        assert_eq!(
+            interpolate("use <br> for line break", &vars),
+            "use <br> for line break"
+        );
     }
 
     #[test]
@@ -467,7 +549,7 @@ mod tests {
 
     #[test]
     fn no_match_without_trigger_words() {
-        let p = TriggerPattern::compile("email to {recipient} {body...}").unwrap();
+        let p = TriggerPattern::compile("email to <recipient> <body>").unwrap();
         assert!(p.match_vars("hello world").is_none());
     }
 
@@ -486,14 +568,14 @@ description: A toy
 ---
 
 ## Triggers
-- debug {body...}
-- fix {body...}
+- debug <body>
+- fix <body>
 
 ## System Prompt
-Debug: {{body}}
+Debug: <body>
 
 ## Output Template
-DEBUG: {{llm_output}}
+DEBUG: <llm_output>
 "#;
 
     #[test]

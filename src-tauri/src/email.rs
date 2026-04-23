@@ -59,19 +59,20 @@ pub fn detect(raw: &str) -> Option<EmailIntent> {
 ///   - Pronoun "I"
 pub fn format(intent: &EmailIntent, polished_body: &str, sign_off: &str, user_name: &str) -> String {
     let body = polish_email_body(polished_body.trim());
-    let sign_off = sign_off.trim();
+    let sign_off_trimmed = sign_off.trim();
+    let sign_off_final = if sign_off_trimmed.is_empty() {
+        "Best"
+    } else {
+        sign_off_trimmed
+    };
     let user_name = user_name.trim();
 
     let mut out = String::new();
     out.push_str(&format!("Hi {},\n\n", intent.recipient));
     out.push_str(&body);
     out.push_str("\n\n");
-    if sign_off.is_empty() {
-        out.push_str("Best,");
-    } else {
-        out.push_str(sign_off);
-        out.push(',');
-    }
+    out.push_str(sign_off_final);
+    out.push(',');
     if !user_name.is_empty() {
         out.push('\n');
         out.push_str(user_name);

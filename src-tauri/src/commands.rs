@@ -6,10 +6,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::dictionary::Entry;
-use crate::settings::{
-    DEFAULT_AI_CLEANUP, DEFAULT_SIGN_OFF, KEY_AI_CLEANUP, KEY_EMAIL_SIGN_OFF, KEY_USER_NAME,
-    KEY_WHISPER_MODEL,
-};
+use crate::settings::{DEFAULT_AI_CLEANUP, KEY_AI_CLEANUP, KEY_USER_NAME, KEY_WHISPER_MODEL};
 use crate::state::AppState;
 
 #[derive(Serialize)]
@@ -69,7 +66,6 @@ pub fn dict_remove(
 pub struct SettingsSnapshot {
     pub user_name: String,
     pub ai_cleanup_enabled: bool,
-    pub email_sign_off: String,
     pub whisper_model: String,
     pub dictionary_count: i64,
 }
@@ -85,7 +81,6 @@ pub fn settings_get(state: State<'_, Arc<AppState>>) -> Result<SettingsSnapshot,
             .flatten()
             .and_then(|v| v.parse::<bool>().ok())
             .unwrap_or(DEFAULT_AI_CLEANUP),
-        email_sign_off: s.get_or_default(KEY_EMAIL_SIGN_OFF, DEFAULT_SIGN_OFF),
         whisper_model: s.get_or_default(KEY_WHISPER_MODEL, "small.en"),
         dictionary_count: state.dictionary.count().unwrap_or(0),
     })
@@ -95,7 +90,6 @@ pub fn settings_get(state: State<'_, Arc<AppState>>) -> Result<SettingsSnapshot,
 pub struct SettingsUpdate {
     pub user_name: Option<String>,
     pub ai_cleanup_enabled: Option<bool>,
-    pub email_sign_off: Option<String>,
 }
 
 // ── skills ─────────────────────────────────────────────────────────────────
@@ -283,18 +277,6 @@ pub fn settings_set(
         state
             .settings
             .set(KEY_AI_CLEANUP, if v { "true" } else { "false" })
-            .map_err(|e| e.to_string())?;
-    }
-    if let Some(v) = update.email_sign_off {
-        let trimmed = v.trim();
-        let value = if trimmed.is_empty() {
-            DEFAULT_SIGN_OFF
-        } else {
-            trimmed
-        };
-        state
-            .settings
-            .set(KEY_EMAIL_SIGN_OFF, value)
             .map_err(|e| e.to_string())?;
     }
     settings_get(state)

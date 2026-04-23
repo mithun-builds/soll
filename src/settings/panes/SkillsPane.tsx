@@ -5,7 +5,7 @@ type Skill = {
   name: string;
   description: string;
   triggers: string[];
-  source: "builtin" | "user";
+  source: "default" | "custom";
   native: string | null;
   has_builtin_default: boolean;
 };
@@ -21,17 +21,17 @@ description: One-line description shown in Settings
 ---
 
 ## Triggers
-- my skill {body...}
+- my skill <body>
 
 ## System Prompt
 Restructure the following:
 
-{{body}}
+<body>
 
 Return only the polished text.
 
 ## Output Template
-{{llm_output}}
+<llm_output>
 `;
 
 export function SkillsPane() {
@@ -109,8 +109,8 @@ export function SkillsPane() {
                     <div className="row-main">
                       <div className="row-title">
                         {s.name}{" "}
-                        {s.source === "user" && s.has_builtin_default && (
-                          <span className="subtle">(customized)</span>
+                        {s.source === "custom" && s.has_builtin_default && (
+                          <span className="subtle">(edited)</span>
                         )}
                       </div>
                       <div className="subtle">{s.description}</div>
@@ -157,18 +157,18 @@ export function SkillsPane() {
         <h2>How skills work</h2>
         <p className="subtle">
           Every skill is a markdown file with three sections: frontmatter
-          (name, description), <code>## Triggers</code> (bulleted phrases),
-          and <code>## System Prompt</code> (sent to Ollama). Optional{" "}
-          <code>## Output Template</code> wraps the response.
+          (name, description), <code>## Triggers</code> (bulleted phrases
+          users say to activate the skill), and <code>## System Prompt</code>{" "}
+          (sent to Ollama). Optional <code>## Output Template</code> wraps
+          the response.
         </p>
         <p className="hint-callout">
-          Placeholders in triggers: <span className="ph">{"{name}"}</span>{" "}
-          captures a single word,{" "}
-          <span className="ph">{"{body...}"}</span> captures the rest.
-          Same placeholders are available in the prompt and template via{" "}
-          <code>{"{{name}}"}</code>, plus built-ins{" "}
-          <code>{"{{user_name}}"}</code>, <code>{"{{sign_off}}"}</code>, and{" "}
-          <code>{"{{llm_output}}"}</code>.
+          Use <span className="ph">{"<name>"}</span> to mark a placeholder.
+          A placeholder captures one word — except the LAST one in a trigger,
+          which captures the rest of what you said. The same names are
+          available anywhere in the prompt and template, plus built-ins{" "}
+          <span className="ph">{"<user_name>"}</span> and{" "}
+          <span className="ph">{"<llm_output>"}</span>.
         </p>
       </div>
 
@@ -296,12 +296,12 @@ function SkillEditor({
           Cancel
         </button>
         <div className="spacer" />
-        {skill?.has_builtin_default && skill.source === "user" && (
+        {skill?.has_builtin_default && skill.source === "custom" && (
           <button
             type="button"
             className="secondary"
             onClick={resetToDefault}
-            title="Remove your customizations and restore the factory version"
+            title="Remove your edits and restore the default version"
           >
             Reset to default
           </button>
@@ -311,13 +311,13 @@ function SkillEditor({
             type="button"
             className="secondary"
             onClick={reloadFromDefault}
-            title="Load the factory markdown into the editor (does not save)"
+            title="Load the default markdown into the editor (does not save)"
           >
             Load default into editor
           </button>
         )}
         {skill &&
-          skill.source === "user" &&
+          skill.source === "custom" &&
           !skill.has_builtin_default && (
             <button type="button" className="danger-btn" onClick={deleteSkill}>
               Delete skill
