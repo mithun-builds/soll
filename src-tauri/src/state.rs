@@ -26,18 +26,12 @@ pub struct AppState {
     pub settings: Arc<Settings>,
     /// Currently-loaded whisper model, kept in sync with the Transcriber.
     current_model: Mutex<WhisperModel>,
-    /// Most recent model the user clicked in the submenu. A background
-    /// download auto-activates only if this still equals the downloaded
-    /// model — otherwise the download silently becomes a cache entry for
-    /// later use.
-    pending_target: Mutex<WhisperModel>,
-    /// Model currently being downloaded (if any). Used to dedupe repeat
-    /// clicks and to know whether starting a new download should cancel
-    /// a running one.
-    downloading: Mutex<Option<WhisperModel>>,
-    /// Bumped whenever a NEW download starts. In-flight downloads poll
-    /// this between chunks and abort on divergence. Cached-model swaps
-    /// do NOT bump it — ongoing downloads continue unaffected.
+    /// Model currently being fetched in the background (if any). Exposed
+    /// so tray::handle_download_click can dedupe repeat clicks and
+    /// tray::build_model_submenu can label the item "Downloading…".
+    pub downloading: Mutex<Option<WhisperModel>>,
+    /// Bumped whenever a new download starts. In-flight downloads poll
+    /// this between chunks and abort on divergence.
     download_epoch: std::sync::atomic::AtomicU64,
     recorder: Mutex<Option<AudioRecorder>>,
     transcriber: AsyncMutex<Option<Arc<Transcriber>>>,
@@ -71,7 +65,6 @@ impl AppState {
             dictionary: dict,
             settings,
             current_model: Mutex::new(model),
-            pending_target: Mutex::new(model),
             downloading: Mutex::new(None),
             download_epoch: std::sync::atomic::AtomicU64::new(0),
             recorder: Mutex::new(None),
@@ -117,213 +110,119 @@ impl AppState {
             me.ollama.warm_up().await;
         });
 
-        // Boot-time load: always foreground (no existing transcriber to
-        // fall back on), always honored (no concurrent user picks yet).
         if self.is_model_cached(model) {
-            self.clone().load_and_swap(model, None, true).await
+            self.clone().load_and_activate(model).await
         } else {
-            use std::sync::atomic::Ordering;
-            let my_epoch = self.download_epoch.fetch_add(1, Ordering::SeqCst) + 1;
-            *self.downloading.lock() = Some(model);
-            let result = self.clone().load_and_swap(model, Some(my_epoch), true).await;
-            let mut dl = self.downloading.lock();
-            if *dl == Some(model) {
-                *dl = None;
-            }
-            result
+            self.clone().boot_download_and_activate(model).await
         }
     }
 
-    /// Switch to a different model.
-    ///
-    /// Behavior depends on whether the model is already on disk:
-    ///
-    /// - **Cached model** → quick foreground swap (<1 s). Does NOT cancel
-    ///   any in-flight background download; that keeps running so the
-    ///   user doesn't lose progress.
-    /// - **Uncached model** → spawn a background download. The user can
-    ///   keep dictating with the current model. When the download finishes,
-    ///   the new model auto-activates *iff* the user hasn't clicked
-    ///   something else in the meantime (`pending_target`). Otherwise it's
-    ///   silently cached for later.
-    /// - **Repeat click on the model already downloading** → no-op. Just
-    ///   updates the intent marker.
-    /// - **New uncached click while a different model is downloading** →
-    ///   cancels the in-flight download and starts the new one.
+    /// Activate a cached model. Fast foreground swap (<1 s). Errors if the
+    /// model isn't cached — the tray prevents that click path by only
+    /// rendering cached models as selectable, but we guard here anyway.
     pub async fn switch_model(self: Arc<Self>, model: WhisperModel) -> Result<()> {
-        *self.pending_target.lock() = model;
-
         if model == self.current_model() && self.transcriber.lock().await.is_some() {
             info!("switch_model: {} already active", model.id());
             return Ok(());
         }
-
-        if self.is_model_cached(model) {
-            info!("switch_model -> {} (cached, foreground swap)", model.id());
-            self.clone().load_and_swap(model, /*epoch=*/ None, true).await
-        } else {
-            // Check if this model is already being downloaded — avoid
-            // cancel-and-restart on repeat clicks.
-            {
-                let mut dl = self.downloading.lock();
-                if *dl == Some(model) {
-                    info!(
-                        "switch_model -> {} (already downloading; pending only)",
-                        model.id()
-                    );
-                    return Ok(());
-                }
-                *dl = Some(model);
-            }
-            // Cancel any previous download and stamp a new epoch.
-            use std::sync::atomic::Ordering;
-            let my_epoch = self.download_epoch.fetch_add(1, Ordering::SeqCst) + 1;
-            info!(
-                "switch_model -> {} (background download, epoch={my_epoch})",
+        if !self.is_model_cached(model) {
+            return Err(anyhow!(
+                "switch_model({}) called on uncached model — call start_download first",
                 model.id()
-            );
-            let me = self.clone();
-            tauri::async_runtime::spawn(async move {
-                let result = me.clone().load_and_swap(model, Some(my_epoch), false).await;
-                // Clear the downloading flag if it's still us. A newer
-                // download may have overwritten it — in that case leave
-                // it alone.
-                {
-                    let mut dl = me.downloading.lock();
-                    if *dl == Some(model) {
-                        *dl = None;
-                    }
-                }
-                if let Err(e) = result {
-                    if !e.to_string().contains(CANCELLED_MSG) {
-                        log::error!("background load {}: {e:?}", model.id());
-                    }
-                }
-            });
-            Ok(())
+            ));
         }
+        info!("switch_model -> {} (cached swap)", model.id());
+        self.load_and_activate(model).await
     }
 
-    /// Core load routine.
-    ///
-    /// `epoch`:
-    /// - `Some(e)` — in-flight download; polls `download_epoch` and aborts
-    ///   if it diverges (the user started a different download).
-    /// - `None` — cached-path swap; no cancellation check (nothing is
-    ///   actually downloading).
-    ///
-    /// `foreground` controls whether the tray icon enters the Loading
-    /// state during the download phase. Cached swaps are foreground;
-    /// background downloads stay out of the way so dictation continues.
-    ///
-    /// Before committing the swap we check `pending_target` — if the user
-    /// moved on to a different model during this load, the downloaded/
-    /// reloaded model is silently cached for future use and not activated.
-    async fn load_and_swap(
-        self: Arc<Self>,
-        model: WhisperModel,
-        epoch: Option<u64>,
-        foreground: bool,
-    ) -> Result<()> {
+    /// Start a background download of an uncached model. Returns as soon
+    /// as the background task is spawned. The download does NOT auto-
+    /// activate the model — the user has to click it in the cached
+    /// section afterward. This keeps "fetch" and "activate" as
+    /// independent intents.
+    pub async fn start_download(self: Arc<Self>, model: WhisperModel) -> Result<()> {
         use std::sync::atomic::Ordering;
 
-        let _swap = self.swap_guard.lock().await;
-        if let Some(e) = epoch {
-            if self.download_epoch.load(Ordering::SeqCst) != e {
-                info!("load_and_swap({}) superseded before lock", model.id());
+        {
+            let mut dl = self.downloading.lock();
+            if *dl == Some(model) {
+                info!("start_download({}): already downloading", model.id());
                 return Ok(());
             }
+            *dl = Some(model);
         }
-        let t0 = std::time::Instant::now();
-
-        if foreground {
-            self.set_tray(TrayState::Loading);
-        }
+        let my_epoch = self.download_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+        info!("start_download -> {} (epoch={my_epoch})", model.id());
 
         let me_progress = self.clone();
         let me_wanted = self.clone();
-        let still_wanted_epoch = epoch;
-        let path_result = ensure_model(
+        let result = ensure_model(
             &self.app,
             model,
-            move |done, total| me_progress.report_download_progress(model, done, total),
-            move || match still_wanted_epoch {
-                Some(e) => me_wanted.download_epoch.load(Ordering::SeqCst) == e,
-                None => true,
+            move |done, total| {
+                tray::set_download_progress(model, done, total);
+                // Suppress noisy log throttling — tray label is enough.
+                let _ = &me_progress;
             },
+            move || me_wanted.download_epoch.load(Ordering::SeqCst) == my_epoch,
         )
         .await;
-        let path = match path_result {
-            Ok(p) => p,
-            Err(e) => {
-                if e.to_string().contains(CANCELLED_MSG) {
-                    info!("load_and_swap({}) cancelled mid-download", model.id());
-                    tray::set_title(&self.app, None);
-                    return Ok(());
-                }
-                return Err(e);
+
+        // Clear the downloading flag if it's still us (a newer download
+        // may have superseded us).
+        {
+            let mut dl = self.downloading.lock();
+            if *dl == Some(model) {
+                *dl = None;
             }
-        };
-
-        // Before doing the expensive whisper load, check whether the user
-        // still wants this model. They may have clicked something else
-        // during the download; if so, just leave the file on disk cached
-        // for next time.
-        if *self.pending_target.lock() != model {
-            info!(
-                "load_and_swap({}): download done but pending_target is now {}; caching only",
-                model.id(),
-                self.pending_target.lock().id()
-            );
-            tray::set_title(&self.app, None);
-            return Ok(());
         }
-
-        if !foreground {
-            self.set_tray(TrayState::Loading);
+        match result {
+            Ok(_) => {
+                info!("start_download({}) complete; model now cached", model.id());
+                Ok(())
+            }
+            Err(e) if e.to_string().contains(CANCELLED_MSG) => {
+                info!("start_download({}) cancelled", model.id());
+                Ok(())
+            }
+            Err(e) => Err(e),
         }
-        tray::set_title(&self.app, Some(&format!(" ⟳ {}", model.id())));
+    }
+
+    /// Load a cached model into memory and make it active. Used by
+    /// `switch_model` (user clicked a cached item) and `warm_up` (boot
+    /// path when the preferred model is already cached).
+    async fn load_and_activate(self: Arc<Self>, model: WhisperModel) -> Result<()> {
+        let _swap = self.swap_guard.lock().await;
+        let t0 = std::time::Instant::now();
+        self.set_tray(TrayState::Loading);
         tray::set_status_text(&format!("Loading {}…", model.id()));
-        info!(
-            "{} on disk in {:?} — loading into whisper…",
-            model.id(),
-            t0.elapsed()
-        );
+
+        // Ensure-on-disk is a no-op for cached models (fast metadata check).
+        let me_unused = self.clone();
+        let path = ensure_model(
+            &self.app,
+            model,
+            |_, _| {},
+            move || {
+                let _ = &me_unused;
+                true
+            },
+        )
+        .await?;
 
         let t_load_start = std::time::Instant::now();
         let model_id = model.id();
         let transcriber = tokio::task::spawn_blocking(move || -> Result<Transcriber> {
             let t = Transcriber::load(&path)?;
-            info!(
-                "{} loaded in {:?}; warming Metal kernels…",
-                model_id,
-                t_load_start.elapsed()
-            );
+            info!("{} loaded in {:?}; warming Metal…", model_id, t_load_start.elapsed());
             let t_warm = std::time::Instant::now();
             t.warm()?;
-            info!(
-                "{} Metal kernels compiled in {:?}",
-                model_id,
-                t_warm.elapsed()
-            );
+            info!("{} Metal compiled in {:?}", model_id, t_warm.elapsed());
             Ok(t)
         })
         .await
         .map_err(|e| anyhow!("join error: {e}"))??;
-
-        // Final pending-target check — during Metal warm (~1 s) the user
-        // may have clicked elsewhere.
-        if *self.pending_target.lock() != model {
-            info!(
-                "load_and_swap({}): whisper loaded but pending_target moved to {}; discarding",
-                model.id(),
-                self.pending_target.lock().id()
-            );
-            tray::set_title(&self.app, None);
-            // Restore the tray to whatever the foreground state wants.
-            self.set_tray(TrayState::Idle);
-            return Ok(());
-        }
 
         *self.transcriber.lock().await = Some(Arc::new(transcriber));
         *self.current_model.lock() = model;
@@ -334,40 +233,58 @@ impl AppState {
         Ok(())
     }
 
-    fn report_download_progress(&self, model: WhisperModel, done: u64, total: u64) {
-        if total == 0 {
-            return;
-        }
-        // Throttle updates to every 1% so the menu-bar title doesn't flicker
-        // on every chunk. Log every 5%.
-        static LAST_TITLE_PCT: std::sync::atomic::AtomicU64 =
-            std::sync::atomic::AtomicU64::new(u64::MAX);
-        static LAST_LOG_BUCKET: std::sync::atomic::AtomicU64 =
-            std::sync::atomic::AtomicU64::new(u64::MAX);
-        let pct = done * 100 / total;
+    /// Blocking foreground download used ONLY by `warm_up` on first
+    /// boot when the preferred model isn't yet cached. There's no existing
+    /// transcriber to fall back on, so we must block until ready.
+    async fn boot_download_and_activate(self: Arc<Self>, model: WhisperModel) -> Result<()> {
+        use std::sync::atomic::Ordering;
 
-        let prev_title = LAST_TITLE_PCT.load(std::sync::atomic::Ordering::Relaxed);
-        if pct != prev_title {
-            LAST_TITLE_PCT.store(pct, std::sync::atomic::Ordering::Relaxed);
-            tray::set_title(&self.app, Some(&format!(" ↓ {pct}%")));
-            tray::set_status_text(&format!(
-                "Downloading {}… {pct}% ({} / {} MB)",
-                model.id(),
-                done / (1024 * 1024),
-                total / (1024 * 1024)
-            ));
+        let _swap = self.swap_guard.lock().await;
+        let t0 = std::time::Instant::now();
+        self.set_tray(TrayState::Loading);
+        tray::set_status_text(&format!("Downloading {}…", model.id()));
+
+        let my_epoch = self.download_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+        *self.downloading.lock() = Some(model);
+
+        let path = ensure_model(
+            &self.app,
+            model,
+            move |done, total| tray::set_download_progress(model, done, total),
+            move || true, // boot downloads are never superseded
+        )
+        .await;
+
+        {
+            let mut dl = self.downloading.lock();
+            if *dl == Some(model) {
+                *dl = None;
+            }
         }
-        let log_bucket = pct / 5;
-        if log_bucket != LAST_LOG_BUCKET.load(std::sync::atomic::Ordering::Relaxed) {
-            LAST_LOG_BUCKET.store(log_bucket, std::sync::atomic::Ordering::Relaxed);
-            info!(
-                "download {}: {pct}% ({} / {} MB)",
-                model.id(),
-                done / (1024 * 1024),
-                total / (1024 * 1024)
-            );
-        }
+        let _ = my_epoch;
+        let path = path?;
+
+        tray::set_status_text(&format!("Loading {}…", model.id()));
+        let t_load_start = std::time::Instant::now();
+        let model_id = model.id();
+        let transcriber = tokio::task::spawn_blocking(move || -> Result<Transcriber> {
+            let t = Transcriber::load(&path)?;
+            info!("{} loaded in {:?}; warming Metal…", model_id, t_load_start.elapsed());
+            t.warm()?;
+            Ok(t)
+        })
+        .await
+        .map_err(|e| anyhow!("join error: {e}"))??;
+
+        *self.transcriber.lock().await = Some(Arc::new(transcriber));
+        *self.current_model.lock() = model;
+        tray::update_model_check(model);
+        let _ = self.settings.set(KEY_WHISPER_MODEL, model.id());
+        info!("{} fully ready in {:?}", model.id(), t0.elapsed());
+        self.set_tray(TrayState::Idle);
+        Ok(())
     }
+
 
     pub async fn on_press(self: Arc<Self>) -> Result<()> {
         {

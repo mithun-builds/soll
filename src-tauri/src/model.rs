@@ -19,7 +19,7 @@ use log::info;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WhisperModel {
     TinyEn,
     BaseEn,
@@ -84,6 +84,24 @@ impl WhisperModel {
             Self::BaseEn => "Base — balanced (142 MB)",
             Self::SmallEn => "Small — good accuracy (466 MB)",
             Self::MediumEn => "Medium — best accuracy (1.4 GB)",
+        }
+    }
+
+    pub fn short_name(&self) -> &'static str {
+        match self {
+            Self::TinyEn => "Tiny",
+            Self::BaseEn => "Base",
+            Self::SmallEn => "Small",
+            Self::MediumEn => "Medium",
+        }
+    }
+
+    pub fn size_label(&self) -> &'static str {
+        match self {
+            Self::TinyEn => "39 MB",
+            Self::BaseEn => "142 MB",
+            Self::SmallEn => "466 MB",
+            Self::MediumEn => "1.4 GB",
         }
     }
 }
