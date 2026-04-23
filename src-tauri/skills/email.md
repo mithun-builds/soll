@@ -20,6 +20,7 @@ Extract: recipient (the person's name), body (the message content)
 ## System Prompt
 Fix only the grammar and punctuation of the following text.
 Remove filler words (um, uh, like, you know). Capitalize "I", weekdays, and months.
+Do NOT use ALL CAPS for any word.
 Output only the corrected text, nothing else.
 
 [body]
