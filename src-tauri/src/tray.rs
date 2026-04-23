@@ -218,19 +218,24 @@ fn handle_model_pick(app: &AppHandle, model: WhisperModel) {
         Some(s) => s.inner().clone(),
         None => return,
     };
+    // macOS auto-toggles a CheckMenuItem on click, so without this the user
+    // can see multiple items checked during an in-flight switch. Force the
+    // radio invariant: exactly one item checked — the one just clicked.
+    update_model_check(model);
+
+    // No-op if the picked model is already active (re-check only, no reload).
     if state.current_model() == model {
-        // Clicking the already-active model is a no-op, but re-checkmark in
-        // case the OS cleared the checked state on the click.
-        update_model_check(model);
         return;
     }
     log::info!("tray: user picked {}", model.id());
     tauri::async_runtime::spawn(async move {
         if let Err(e) = state.clone().switch_model(model).await {
             log::error!("switch_model({}) failed: {e:?}", model.id());
-        } else {
-            update_model_check(model);
+            // Revert the checkmark to the actual current model so the UI
+            // doesn't lie about what's loaded.
+            update_model_check(state.current_model());
         }
+        // On success the initial update_model_check call is already correct.
     });
 }
 
