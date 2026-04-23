@@ -10,6 +10,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::audio::AudioRecorder;
 use crate::cleanup::OllamaClient;
+use crate::corrections;
 use crate::dictionary::Dictionary;
 use crate::formatter::{self, Format};
 use crate::model::{ensure_model, WhisperModel, CANCELLED_MSG};
@@ -378,10 +379,18 @@ impl AppState {
             }
         };
 
+        // Mid-sentence corrections: "5 pm actually 6 pm" -> "6 pm",
+        // "Tuesday I mean Wednesday" -> "Wednesday". Only run on prose;
+        // list formatting already handles its own structure.
+        let after_corrections = if matches!(format, Format::Plain) {
+            corrections::apply(&polished)
+        } else {
+            polished
+        };
         // Deterministic dictionary post-processor: rewrites "home lane" ->
-        // "HomeLane", "homelane" -> "HomeLane" etc. Runs AFTER cleanup (or
-        // formatter) because both can split/re-wrap casings unpredictably.
-        let with_dict = crate::dictionary::apply_to_text(&polished, &preserve_terms);
+        // "HomeLane", "homelane" -> "HomeLane" etc. Runs AFTER cleanup /
+        // corrections because both can reshape the surface text.
+        let with_dict = crate::dictionary::apply_to_text(&after_corrections, &preserve_terms);
         let trimmed = with_dict.trim().to_string();
         if trimmed.is_empty() {
             info!("[latency #{n}] audio={audio_ms}ms whisper={whisper_ms}ms — empty transcript");

@@ -10,6 +10,7 @@ mod tray;
 // Everything under these modules is re-entered by the bench, so it
 // must run the same code paths production does.
 pub mod cleanup;
+pub mod corrections;
 pub mod dictionary;
 pub mod formatter;
 pub mod metal;
