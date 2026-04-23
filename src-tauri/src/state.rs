@@ -356,21 +356,37 @@ impl AppState {
 
         let preserve_terms: Vec<String> = dict_words.into_iter().map(|e| e.word).collect();
 
-        // Auto-formatting: if the raw transcript looks like a numbered or
-        // bullet list, format it deterministically and skip Ollama entirely.
-        // An LLM always turns structured lists back into prose; a regex never.
+        // Detect format FIRST on the raw transcript — "bullet list…" and
+        // "ordinal list…" trigger words are only meaningful at the start.
         let format = formatter::detect(&raw);
+
+        // Mid-sentence corrections run BEFORE Ollama for prose. This is
+        // important: if we leave "X actually Y" for Ollama to see, the
+        // LLM will sometimes silently drop Y (observed in testing —
+        // "Tuesday I mean Wednesday" became just "Tuesday"). Applying
+        // the deterministic regex first means Ollama only ever receives
+        // the final corrected text.
+        let raw_or_corrected = if matches!(format, Format::Plain) {
+            corrections::apply(&raw)
+        } else {
+            raw.clone()
+        };
+
         let t_ollama_start = Instant::now();
         let (polished, ollama_ms, ollama_used) = match format {
-            Format::Plain => match self.ollama.polish_with_terms(&raw, &preserve_terms).await {
+            Format::Plain => match self
+                .ollama
+                .polish_with_terms(&raw_or_corrected, &preserve_terms)
+                .await
+            {
                 Ok(p) => {
                     let ms = t_ollama_start.elapsed().as_millis() as u64;
                     (p, ms, true)
                 }
                 Err(e) => {
                     let ms = t_ollama_start.elapsed().as_millis() as u64;
-                    warn!("[latency #{n}] cleanup skipped ({e:?}), using raw transcript");
-                    (raw.clone(), ms, false)
+                    warn!("[latency #{n}] cleanup skipped ({e:?}), using corrected transcript");
+                    (raw_or_corrected.clone(), ms, false)
                 }
             },
             Format::Bullets | Format::Numbered => {
@@ -379,14 +395,7 @@ impl AppState {
             }
         };
 
-        // Mid-sentence corrections: "5 pm actually 6 pm" -> "6 pm",
-        // "Tuesday I mean Wednesday" -> "Wednesday". Only run on prose;
-        // list formatting already handles its own structure.
-        let after_corrections = if matches!(format, Format::Plain) {
-            corrections::apply(&polished)
-        } else {
-            polished
-        };
+        let after_corrections = polished;
         // Deterministic dictionary post-processor: rewrites "home lane" ->
         // "HomeLane", "homelane" -> "HomeLane" etc. Runs AFTER cleanup /
         // corrections because both can reshape the surface text.
