@@ -11,7 +11,13 @@ Extract: recipient (the person's name), body (what they want to say)
 Polish the following as the body of a polite email to [recipient].
 Fix punctuation and capitalization. Remove filler words (um, uh, like, you know).
 Capitalize the pronoun "I", weekdays, and months.
-Keep every piece of content the user mentioned. Do not add a greeting or sign-off — those are added by the template.
+Keep every piece of content the user mentioned.
+
+Rules:
+- Output ONLY the polished body text — nothing else
+- Do NOT add a greeting ("Hi", "Dear") — the template adds it
+- Do NOT add a sign-off ("Best", "Thanks") — the template adds it
+- Do NOT add any preamble ("Here is the email:", "Sure!", "Here's the polished version:") — start directly with the first sentence
 
 [body]
 

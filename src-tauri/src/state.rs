@@ -99,6 +99,43 @@ async fn classify_skill_with_llm(
     Some((skill_name, vars))
 }
 
+/// Strip common LLM preamble sentences that appear before the actual content,
+/// e.g. "Here's the polished email:", "Sure! Here you go:", "Certainly!".
+/// Looks for the first blank line or a sentence-ending preamble marker and
+/// returns everything after it. Falls back to the original string.
+fn strip_llm_preamble(s: &str) -> String {
+    let s = s.trim();
+
+    // Patterns that strongly indicate a preamble line
+    let preamble_triggers: &[&str] = &[
+        "here's", "here is", "sure", "certainly", "of course",
+        "below is", "the following", "polished", "revised", "rewritten",
+    ];
+
+    // Check if the first non-empty line looks like a preamble
+    let mut lines = s.lines().peekable();
+    if let Some(first) = lines.peek() {
+        let lower = first.to_lowercase();
+        let looks_like_preamble = preamble_triggers
+            .iter()
+            .any(|p| lower.starts_with(p) || lower.contains(p))
+            && (first.trim_end().ends_with(':') || first.trim_end().ends_with('!') || first.trim_end().ends_with('.'));
+
+        if looks_like_preamble {
+            // Drop the first line and any immediately following blank lines
+            lines.next();
+            let rest: String = lines
+                .skip_while(|l| l.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !rest.trim().is_empty() {
+                return rest.trim().to_string();
+            }
+        }
+    }
+    s.to_string()
+}
+
 /// Find the outermost `{...}` in a string, handling nesting.
 fn extract_json_object(s: &str) -> Option<&str> {
     let start = s.find('{')?;
@@ -519,7 +556,7 @@ impl AppState {
             };
             let ollama_ms = t_ollama.elapsed().as_millis() as u64;
 
-            vars.insert("result".into(), llm_output);
+            vars.insert("result".into(), strip_llm_preamble(&llm_output));
             let final_text = skills::interpolate(&skill.output_template, &vars);
             let with_dict = crate::dictionary::apply_to_text(&final_text, &preserve_terms);
             let trimmed = with_dict.trim().to_string();
