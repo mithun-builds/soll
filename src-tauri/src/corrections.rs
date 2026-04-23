@@ -21,11 +21,15 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 
 /// Correction-marker phrases between the wrong value and the right one.
-const MARKERS: &str = r"(?:actually|i\s+mean(?:t)?|no\s+wait|wait\s+no|correction|sorry\s+i\s+mean|scratch\s+that|rather|make\s+that)";
+/// Ordered so longer phrases (e.g. "sorry i mean") match before their
+/// prefixes ("sorry") — regex alternation is first-match.
+const MARKERS: &str = r"(?:sorry\s+actually|sorry\s+i\s+mean(?:t)?|i\s+mean(?:t\s+to\s+say)?|i\s+mean(?:t)?|no\s+wait|wait\s+no|scratch\s+that|or\s+rather|make\s+that|correction|actually|rather|sorry)";
 
-/// Number optionally tagged with %. Does NOT consume trailing whitespace.
-/// Time units (am/pm) live in a separate word-pair pattern below.
-const NUMBER_BARE: &str = r"\d+(?:[:.]\d+)?%?";
+/// Number with optional attached or spaced am/pm/%. Whisper sometimes
+/// emits "5pm" or "5 pm" or "5 p.m." — accept all. Does NOT consume
+/// trailing whitespace beyond any unit it matches.
+const NUMBER_BARE: &str =
+    r"\d+(?:[:.]\d+)?(?:\s*(?:am|pm|AM|PM|a\.m\.|p\.m\.))?%?";
 
 /// Weekday names (full + common abbreviations).
 const WEEKDAY: &str =
@@ -254,6 +258,41 @@ mod tests {
         assert_eq!(
             apply("The price is 10 dollars, actually 15 dollars."),
             "The price is 15 dollars."
+        );
+    }
+
+    // ── real-world Whisper output variants ─────────────────────
+
+    #[test]
+    fn corrects_attached_am_pm() {
+        // Whisper often emits "5am" and "6pm" without a space.
+        assert_eq!(
+            apply("Meet me at 5am, actually 6pm."),
+            "Meet me at 6pm."
+        );
+    }
+
+    #[test]
+    fn corrects_attached_unit_same() {
+        assert_eq!(
+            apply("meet at 5pm actually 6pm"),
+            "meet at 6pm"
+        );
+    }
+
+    #[test]
+    fn sorry_as_marker() {
+        assert_eq!(
+            apply("send it to John, sorry Jane"),
+            "send it to Jane"
+        );
+    }
+
+    #[test]
+    fn sorry_actually_combo() {
+        assert_eq!(
+            apply("5pm sorry actually 6pm"),
+            "6pm"
         );
     }
 }
