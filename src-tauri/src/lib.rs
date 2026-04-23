@@ -16,6 +16,7 @@ pub mod email;
 pub mod formatter;
 pub mod metal;
 pub mod model;
+pub mod skills;
 pub mod transcribe;
 
 use std::sync::Arc;

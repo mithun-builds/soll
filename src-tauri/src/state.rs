@@ -20,6 +20,7 @@ use crate::settings::{
     Settings, DEFAULT_AI_CLEANUP, DEFAULT_SIGN_OFF, KEY_AI_CLEANUP, KEY_EMAIL_SIGN_OFF,
     KEY_USER_NAME, KEY_WHISPER_MODEL,
 };
+use crate::skills::{self, Skill};
 use crate::transcribe::Transcriber;
 use crate::tray::{self, TrayState};
 
@@ -29,6 +30,8 @@ pub struct AppState {
     pub app: AppHandle,
     pub dictionary: Arc<Dictionary>,
     pub settings: Arc<Settings>,
+    /// Loaded skill registry (built-in + user-dropped markdown files).
+    pub skills: Mutex<Vec<Skill>>,
     /// Currently-loaded whisper model, kept in sync with the Transcriber.
     current_model: Mutex<WhisperModel>,
     /// Model currently being fetched in the background (if any). Exposed
@@ -65,10 +68,23 @@ impl AppState {
             .get_or_default(KEY_WHISPER_MODEL, WhisperModel::DEFAULT.id());
         let model = WhisperModel::from_id(&preferred).unwrap_or(WhisperModel::DEFAULT);
 
+        let user_skills_dir = data_dir.join("skills");
+        let skills_list = skills::load_all(Some(&user_skills_dir));
+        log::info!(
+            "loaded {} skills: {}",
+            skills_list.len(),
+            skills_list
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+
         Self {
             app,
             dictionary: dict,
             settings,
+            skills: Mutex::new(skills_list),
             current_model: Mutex::new(model),
             downloading: Mutex::new(None),
             download_epoch: std::sync::atomic::AtomicU64::new(0),
@@ -359,8 +375,77 @@ impl AppState {
         let whisper_ms = t_whisper_start.elapsed().as_millis() as u64;
 
         let preserve_terms: Vec<String> = dict_words.into_iter().map(|e| e.word).collect();
+        let user_name = self.settings.get_or_default(KEY_USER_NAME, "");
+        let sign_off = self.settings.get_or_default(KEY_EMAIL_SIGN_OFF, DEFAULT_SIGN_OFF);
+        let ai_on_global = self
+            .settings
+            .get(KEY_AI_CLEANUP)
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse::<bool>().ok())
+            .unwrap_or(DEFAULT_AI_CLEANUP);
 
-        // Detect intents on the raw transcript before any processing.
+        // Try the user-extensible skill registry first. A match here
+        // bypasses the whole downstream pipeline — the skill owns its
+        // output (via its System Prompt + Output Template). The native
+        // "email" skill still routes back to email.rs for the deterministic
+        // greeting/sign-off + capitalization pass.
+        let skill_match = {
+            let list = self.skills.lock();
+            skills::match_skill(&list, &raw).map(|(s, v)| (s.clone(), v))
+        };
+        if let Some((skill, mut vars)) = skill_match {
+            info!("[latency #{n}] skill match: {}", skill.name);
+            // Native email skill re-uses the hardened email.rs pipeline —
+            // same Ollama safety gate + deterministic capitalization.
+            if skill.native.as_deref() == Some("email") {
+                // Fall through to the legacy email path below (which
+                // guarantees safety net + capitalization).
+                // No early return.
+            } else {
+                // Generic markdown skill: system prompt through Ollama
+                // (if enabled), wrap in output template, done.
+                vars.insert("user_name".into(), user_name.clone());
+                vars.insert("sign_off".into(), sign_off.clone());
+                let system_prompt = skill.interpolate(&skill.system_prompt, &vars);
+                let t_ollama_start = Instant::now();
+                let llm_output = if ai_on_global {
+                    match self.ollama.generate(&system_prompt, 1024).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            warn!("skill {}: ollama failed ({e:?}); using raw body", skill.name);
+                            vars.get("body").cloned().unwrap_or_default()
+                        }
+                    }
+                } else {
+                    info!("skill {}: AI cleanup off — passing body through", skill.name);
+                    vars.get("body").cloned().unwrap_or_default()
+                };
+                let ollama_ms = t_ollama_start.elapsed().as_millis() as u64;
+                vars.insert("llm_output".into(), llm_output);
+                let final_text = skill.interpolate(&skill.output_template, &vars);
+                let with_dict = crate::dictionary::apply_to_text(&final_text, &preserve_terms);
+                let trimmed = with_dict.trim().to_string();
+                if trimmed.is_empty() {
+                    info!("[latency #{n}] skill {} empty output; skipping paste", skill.name);
+                    self.set_tray(TrayState::Idle);
+                    return Ok(());
+                }
+                let t_paste_start = Instant::now();
+                paste_text(&trimmed)?;
+                let paste_ms = t_paste_start.elapsed().as_millis() as u64;
+                let total_ms = t_release.elapsed().as_millis() as u64;
+                info!(
+                    "[latency #{n}] skill={} audio={audio_ms}ms whisper={whisper_ms}ms ollama={ollama_ms}ms paste={paste_ms}ms total={total_ms}ms text={trimmed:?}",
+                    skill.name
+                );
+                self.set_tray(TrayState::Transcribed);
+                return Ok(());
+            }
+        }
+
+        // No skill match (or native-email fallthrough) — continue the
+        // classic pipeline:
         //   email  — "email to John about…" → structured greeting/body/sign-off
         //   format — "bullet list …" / "ordinal list …" → structured list
         //   plain  — normal prose
@@ -379,13 +464,7 @@ impl AppState {
         // "Tuesday I mean Wednesday" became just "Tuesday"). Applying
         // the deterministic regex first means Ollama only ever receives
         // the final corrected text.
-        let ai_on = self
-            .settings
-            .get(KEY_AI_CLEANUP)
-            .ok()
-            .flatten()
-            .and_then(|v| v.parse::<bool>().ok())
-            .unwrap_or(DEFAULT_AI_CLEANUP);
+        let ai_on = ai_on_global;
 
         // If this is an email, corrections apply to the body only; wrap
         // later. Otherwise apply to the whole raw.
@@ -426,8 +505,6 @@ impl AppState {
 
         // Wrap polished body in email template if that's the detected intent.
         let after_corrections = if let Some(intent) = &email_intent {
-            let user_name = self.settings.get_or_default(KEY_USER_NAME, "");
-            let sign_off = self.settings.get_or_default(KEY_EMAIL_SIGN_OFF, DEFAULT_SIGN_OFF);
             info!(
                 "[latency #{n}] email mode → recipient={}, sign_off={}, user_name={}",
                 intent.recipient,

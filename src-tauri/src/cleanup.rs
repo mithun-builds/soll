@@ -147,6 +147,41 @@ impl OllamaClient {
         self.polish_with_terms(raw, &[]).await
     }
 
+    /// Fire an arbitrary prompt (skill's system prompt, etc.) through the
+    /// live endpoint and return the response. No safety gate — callers
+    /// that need one should call `polish_with_terms`.
+    pub async fn generate(&self, prompt: &str, max_tokens: i32) -> Result<String> {
+        match self.state() {
+            CleanupState::Unavailable => return Err(anyhow!("ollama unavailable")),
+            CleanupState::WarmingUp | CleanupState::Unknown => {
+                return Err(anyhow!("ollama still warming up"))
+            }
+            CleanupState::Ready => {}
+        }
+        let body = GenReq {
+            model: MODEL,
+            prompt: prompt.to_string(),
+            stream: false,
+            keep_alive: "30m",
+            options: GenOptions {
+                temperature: 0.2,
+                num_predict: max_tokens,
+            },
+        };
+        let resp = self
+            .live
+            .post(OLLAMA_GENERATE)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| anyhow!("ollama send: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(anyhow!("ollama status: {}", resp.status()));
+        }
+        let parsed: GenResp = resp.json().await?;
+        Ok(parsed.response.trim().to_string())
+    }
+
     /// Polish with an optional list of "preserve exactly" terms injected
     /// into the system prompt. Used by the personal dictionary to keep
     /// names/jargon intact through cleanup.
