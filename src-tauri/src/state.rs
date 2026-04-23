@@ -12,7 +12,6 @@ use crate::audio::AudioRecorder;
 use crate::cleanup::OllamaClient;
 use crate::corrections;
 use crate::dictionary::Dictionary;
-use crate::email;
 use crate::formatter::{self, Format};
 use crate::model::{ensure_model, WhisperModel, CANCELLED_MSG};
 use crate::paste::paste_text;
@@ -25,49 +24,110 @@ use crate::tray::{self, TrayState};
 
 static DICTATION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// The email skill's Output Template is the source of truth for the
-/// sign-off word. Pull the last word on the sign-off line (second-to-
-/// last content line, ending with a comma) out of the template. Falls
-/// back to "Best" if the template doesn't match the expected shape.
-fn email_sign_off_from_skill(skills: &[Skill]) -> String {
-    const DEFAULT: &str = "Best";
-    let email = match skills.iter().find(|s| s.name == "email") {
-        Some(s) => s,
-        None => return DEFAULT.to_string(),
-    };
-    // Skim the Output Template for a non-empty line ending in `,` —
-    // that's the sign-off line. Strip the comma and any surrounding spaces.
-    for line in email.output_template.lines().rev() {
-        let trimmed = line.trim();
-        if let Some(before_comma) = trimmed.strip_suffix(',') {
-            let s = before_comma.trim();
-            if !s.is_empty() {
-                return s.to_string();
+/// LLM-based skill router. Sends a short classification prompt to Ollama
+/// listing all intent-based skills, gets back a JSON response with the
+/// skill name and extracted variables.
+///
+/// Returns None on any failure (Ollama down, malformed JSON, unknown skill
+/// name) — the caller falls through to the default cleanup path.
+async fn classify_skill_with_llm(
+    raw: &str,
+    skills: &[Skill],
+    ollama: &OllamaClient,
+) -> Option<(String, std::collections::HashMap<String, String>)> {
+    // Only consider skills that have a plain-English intent description.
+    let intent_skills: Vec<&Skill> = skills.iter().filter(|s| s.intent.is_some()).collect();
+    if intent_skills.is_empty() {
+        return None;
+    }
+
+    // Build a compact list: "- name: description (extract hint if any)"
+    let skill_list = intent_skills
+        .iter()
+        .map(|s| {
+            let intent = s.intent.as_deref().unwrap_or("");
+            format!("- {}: {}", s.name, intent)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let prompt = format!(
+        "You are a skill router for a voice dictation app.\n\
+         Match the transcription to exactly one skill, or null.\n\
+         \n\
+         Skills:\n{skill_list}\n\
+         \n\
+         Transcription: \"{raw}\"\n\
+         \n\
+         Reply with JSON only — no explanation, no markdown.\n\
+         If a skill matches:\n\
+         {{\"skill\":\"name\",\"vars\":{{\"key\":\"value\"}}}}\n\
+         If nothing matches:\n\
+         {{\"skill\":null}}\n\
+         JSON:"
+    );
+
+    let response = ollama.generate(&prompt, 300).await.ok()?;
+
+    // Extract the JSON object from the response (LLM may add preamble)
+    let json_str = extract_json_object(&response)?;
+    let value: serde_json::Value = serde_json::from_str(json_str).ok()?;
+
+    // skill null → no match
+    let skill_val = value.get("skill")?;
+    if skill_val.is_null() {
+        return None;
+    }
+    let skill_name = skill_val.as_str()?.to_string();
+    if skill_name.is_empty() {
+        return None;
+    }
+
+    // Verify the named skill actually exists
+    intent_skills.iter().find(|s| s.name == skill_name)?;
+
+    let vars: std::collections::HashMap<String, String> = value
+        .get("vars")
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some((skill_name, vars))
+}
+
+/// Find the outermost `{...}` in a string, handling nesting.
+fn extract_json_object(s: &str) -> Option<&str> {
+    let start = s.find('{')?;
+    let mut depth = 0i32;
+    for (i, b) in s.as_bytes()[start..].iter().enumerate() {
+        match b {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&s[start..start + i + 1]);
+                }
             }
+            _ => {}
         }
     }
-    DEFAULT.to_string()
+    None
 }
 
 pub struct AppState {
     pub app: AppHandle,
     pub dictionary: Arc<Dictionary>,
     pub settings: Arc<Settings>,
-    /// Loaded skill registry (built-in + user-dropped markdown files).
     pub skills: Mutex<Vec<Skill>>,
-    /// Currently-loaded whisper model, kept in sync with the Transcriber.
     current_model: Mutex<WhisperModel>,
-    /// Model currently being fetched in the background (if any). Exposed
-    /// so tray::handle_download_click can dedupe repeat clicks and
-    /// tray::build_model_submenu can label the item "Downloading…".
     pub downloading: Mutex<Option<WhisperModel>>,
-    /// Bumped whenever a new download starts. In-flight downloads poll
-    /// this between chunks and abort on divergence.
     download_epoch: std::sync::atomic::AtomicU64,
     recorder: Mutex<Option<AudioRecorder>>,
     transcriber: AsyncMutex<Option<Arc<Transcriber>>>,
-    /// Held exclusively during model swaps so dictations don't start on a
-    /// half-loaded transcriber.
     swap_guard: AsyncMutex<()>,
     ollama: OllamaClient,
     is_recording: Mutex<bool>,
@@ -87,8 +147,7 @@ impl AppState {
             Ok(s) => Arc::new(s),
             Err(e) => panic!("cannot open settings db: {e:?}"),
         };
-        let preferred = settings
-            .get_or_default(KEY_WHISPER_MODEL, WhisperModel::DEFAULT.id());
+        let preferred = settings.get_or_default(KEY_WHISPER_MODEL, WhisperModel::DEFAULT.id());
         let model = WhisperModel::from_id(&preferred).unwrap_or(WhisperModel::DEFAULT);
 
         let user_skills_dir = data_dir.join("skills");
@@ -123,7 +182,6 @@ impl AppState {
         *self.current_model.lock()
     }
 
-    /// Path to the user's skills override directory. Created on demand.
     pub fn user_skills_dir(&self) -> Result<std::path::PathBuf> {
         let d = self
             .app
@@ -134,8 +192,6 @@ impl AppState {
         Ok(d)
     }
 
-    /// Reload the skill registry (built-ins + whatever is on disk right now).
-    /// Called after any mutation — save/reset/delete/create.
     pub fn reload_skills(&self) {
         let dir = self.user_skills_dir().ok();
         let new = skills::load_all(dir.as_deref());
@@ -147,9 +203,6 @@ impl AppState {
         *self.skills.lock() = new;
     }
 
-    /// Synchronous cache check — used by the tray handler to decide whether
-    /// the swap can be foreground (cached, <1 s) or must be background
-    /// (needs a download). `std::fs::metadata` is stat-level fast.
     pub fn is_model_cached(&self, model: WhisperModel) -> bool {
         let dir = match self.app.path().app_data_dir() {
             Ok(d) => d.join("models"),
@@ -166,13 +219,10 @@ impl AppState {
         tray::set_state(&self.app, state);
     }
 
-    /// Download the preferred model (if needed), load whisper, compile Metal
-    /// kernels, and pre-warm Ollama. Tray stays in Loading until this completes.
     pub async fn warm_up(self: &Arc<Self>) -> Result<()> {
         let model = self.current_model();
         info!("warming up: whisper={} + cleanup", model.id());
 
-        // Ollama warm-up runs concurrently.
         let me = self.clone();
         tokio::spawn(async move {
             me.ollama.warm_up().await;
@@ -185,9 +235,6 @@ impl AppState {
         }
     }
 
-    /// Activate a cached model. Fast foreground swap (<1 s). Errors if the
-    /// model isn't cached — the tray prevents that click path by only
-    /// rendering cached models as selectable, but we guard here anyway.
     pub async fn switch_model(self: Arc<Self>, model: WhisperModel) -> Result<()> {
         if model == self.current_model() && self.transcriber.lock().await.is_some() {
             info!("switch_model: {} already active", model.id());
@@ -203,11 +250,6 @@ impl AppState {
         self.load_and_activate(model).await
     }
 
-    /// Start a background download of an uncached model. Returns as soon
-    /// as the background task is spawned. The download does NOT auto-
-    /// activate the model — the user has to click it in the cached
-    /// section afterward. This keeps "fetch" and "activate" as
-    /// independent intents.
     pub async fn start_download(self: Arc<Self>, model: WhisperModel) -> Result<()> {
         use std::sync::atomic::Ordering;
 
@@ -229,15 +271,12 @@ impl AppState {
             model,
             move |done, total| {
                 tray::set_download_progress(model, done, total);
-                // Suppress noisy log throttling — tray label is enough.
                 let _ = &me_progress;
             },
             move || me_wanted.download_epoch.load(Ordering::SeqCst) == my_epoch,
         )
         .await;
 
-        // Clear the downloading flag if it's still us (a newer download
-        // may have superseded us).
         {
             let mut dl = self.downloading.lock();
             if *dl == Some(model) {
@@ -257,16 +296,12 @@ impl AppState {
         }
     }
 
-    /// Load a cached model into memory and make it active. Used by
-    /// `switch_model` (user clicked a cached item) and `warm_up` (boot
-    /// path when the preferred model is already cached).
     async fn load_and_activate(self: Arc<Self>, model: WhisperModel) -> Result<()> {
         let _swap = self.swap_guard.lock().await;
         let t0 = std::time::Instant::now();
         self.set_tray(TrayState::Loading);
         tray::set_status_text(&format!("Loading {}…", model.id()));
 
-        // Ensure-on-disk is a no-op for cached models (fast metadata check).
         let me_unused = self.clone();
         let path = ensure_model(
             &self.app,
@@ -301,9 +336,6 @@ impl AppState {
         Ok(())
     }
 
-    /// Blocking foreground download used ONLY by `warm_up` on first
-    /// boot when the preferred model isn't yet cached. There's no existing
-    /// transcriber to fall back on, so we must block until ready.
     async fn boot_download_and_activate(self: Arc<Self>, model: WhisperModel) -> Result<()> {
         use std::sync::atomic::Ordering;
 
@@ -319,7 +351,7 @@ impl AppState {
             &self.app,
             model,
             move |done, total| tray::set_download_progress(model, done, total),
-            move || true, // boot downloads are never superseded
+            move || true,
         )
         .await;
 
@@ -353,7 +385,6 @@ impl AppState {
         Ok(())
     }
 
-
     pub async fn on_press(self: Arc<Self>) -> Result<()> {
         {
             let mut rec = self.is_recording.lock();
@@ -362,13 +393,9 @@ impl AppState {
             }
             *rec = true;
         }
-        // Show "Initializing" first — the cpal stream takes ~50–120 ms to
-        // build, and the user shouldn't start speaking until capture is
-        // actually live.
         self.set_tray(TrayState::Initializing);
         let recorder = AudioRecorder::start()?;
         *self.recorder.lock() = Some(recorder);
-        // Mic is now capturing — signal the user to speak.
         self.set_tray(TrayState::Transcribing);
         Ok(())
     }
@@ -392,7 +419,6 @@ impl AppState {
         let audio_ms = (samples.len() as f64 / 16_000.0 * 1000.0) as u64;
 
         if samples.len() < 16_000 / 4 {
-            // Under 250ms — accidental tap.
             info!("[latency #{n}] audio={audio_ms}ms — skipped (tap too short)");
             self.set_tray(TrayState::Idle);
             return Ok(());
@@ -408,7 +434,6 @@ impl AppState {
             anyhow!("transcriber not ready; still loading model")
         })?;
 
-        // Build whisper initial_prompt from the user's personal dictionary.
         let whisper_prompt = self.dictionary.whisper_prompt().unwrap_or(None);
         let dict_words = self.dictionary.list().unwrap_or_default();
 
@@ -423,7 +448,7 @@ impl AppState {
 
         let preserve_terms: Vec<String> = dict_words.into_iter().map(|e| e.word).collect();
         let user_name = self.settings.get_or_default(KEY_USER_NAME, "");
-        let ai_on_global = self
+        let ai_on = self
             .settings
             .get(KEY_AI_CLEANUP)
             .ok()
@@ -431,97 +456,109 @@ impl AppState {
             .and_then(|v| v.parse::<bool>().ok())
             .unwrap_or(DEFAULT_AI_CLEANUP);
 
-        // Try the user-extensible skill registry first. A match here
-        // bypasses the whole downstream pipeline — the skill owns its
-        // output (via its System Prompt + Output Template). The native
-        // "email" skill still routes back to email.rs for the deterministic
-        // greeting/sign-off + capitalization pass.
-        let skill_match = {
+        // ── Skill routing ────────────────────────────────────────────────────
+        //
+        // Phase 1: instant trigger-pattern matching (legacy skills, 0 ms)
+        // Phase 2: LLM intent classification (intent-based skills, ~400 ms)
+        //          — only runs when AI cleanup is enabled (requires Ollama)
+
+        let trigger_match = {
             let list = self.skills.lock();
             skills::match_skill(&list, &raw).map(|(s, v)| (s.clone(), v))
         };
-        if let Some((skill, mut vars)) = skill_match {
-            info!("[latency #{n}] skill match: {}", skill.name);
-            // Native email skill re-uses the hardened email.rs pipeline —
-            // same Ollama safety gate + deterministic capitalization.
-            if skill.native.as_deref() == Some("email") {
-                // Fall through to the legacy email path below (which
-                // guarantees safety net + capitalization).
-                // No early return.
-            } else {
-                // Generic markdown skill: system prompt through Ollama
-                // (if enabled), wrap in output template, done.
-                vars.insert("user_name".into(), user_name.clone());
-                let system_prompt = skill.interpolate(&skill.system_prompt, &vars);
-                let t_ollama_start = Instant::now();
-                let llm_output = if ai_on_global {
-                    match self.ollama.generate(&system_prompt, 1024).await {
-                        Ok(s) => s,
-                        Err(e) => {
-                            warn!("skill {}: ollama failed ({e:?}); using raw body", skill.name);
-                            vars.get("body").cloned().unwrap_or_default()
-                        }
-                    }
-                } else {
-                    info!("skill {}: AI cleanup off — passing body through", skill.name);
-                    vars.get("body").cloned().unwrap_or_default()
-                };
-                let ollama_ms = t_ollama_start.elapsed().as_millis() as u64;
-                vars.insert("llm_output".into(), llm_output);
-                let final_text = skill.interpolate(&skill.output_template, &vars);
-                let with_dict = crate::dictionary::apply_to_text(&final_text, &preserve_terms);
-                let trimmed = with_dict.trim().to_string();
-                if trimmed.is_empty() {
-                    info!("[latency #{n}] skill {} empty output; skipping paste", skill.name);
-                    self.set_tray(TrayState::Idle);
-                    return Ok(());
-                }
-                let t_paste_start = Instant::now();
-                paste_text(&trimmed)?;
-                let paste_ms = t_paste_start.elapsed().as_millis() as u64;
-                let total_ms = t_release.elapsed().as_millis() as u64;
-                info!(
-                    "[latency #{n}] skill={} audio={audio_ms}ms whisper={whisper_ms}ms ollama={ollama_ms}ms paste={paste_ms}ms total={total_ms}ms text={trimmed:?}",
-                    skill.name
-                );
-                self.set_tray(TrayState::Transcribed);
-                return Ok(());
-            }
-        }
 
-        // No skill match (or native-email fallthrough) — continue the
-        // classic pipeline:
-        //   email  — "email to John about…" → structured greeting/body/sign-off
-        //   format — "bullet list …" / "ordinal list …" → structured list
-        //   plain  — normal prose
-        let email_intent = email::detect(&raw);
-        let format = if email_intent.is_some() {
-            // Skip list detection when it's an email — email body may contain
-            // "bullet list …" phrases legitimately.
-            Format::Plain
+        let skill_match = if trigger_match.is_some() {
+            trigger_match
+        } else if ai_on {
+            let t_classify = Instant::now();
+            let snapshot: Vec<Skill> = self.skills.lock().clone();
+            let result = classify_skill_with_llm(&raw, &snapshot, &self.ollama).await;
+            let classify_ms = t_classify.elapsed().as_millis() as u64;
+            match &result {
+                Some((name, _)) => info!(
+                    "[latency #{n}] skill classify → {name} in {classify_ms}ms"
+                ),
+                None => info!("[latency #{n}] skill classify → no match in {classify_ms}ms"),
+            }
+            result.and_then(|(name, vars)| {
+                let list = self.skills.lock();
+                list.iter().find(|s| s.name == name).map(|s| (s.clone(), vars))
+            })
         } else {
-            formatter::detect(&raw)
+            None
         };
 
-        // Mid-sentence corrections run BEFORE Ollama for prose. This is
-        // important: if we leave "X actually Y" for Ollama to see, the
-        // LLM will sometimes silently drop Y (observed in testing —
-        // "Tuesday I mean Wednesday" became just "Tuesday"). Applying
-        // the deterministic regex first means Ollama only ever receives
-        // the final corrected text.
-        let ai_on = ai_on_global;
+        // ── Skill execution ──────────────────────────────────────────────────
 
-        // If this is an email, corrections apply to the body only; wrap
-        // later. Otherwise apply to the whole raw.
-        let body_for_cleanup: String = match &email_intent {
-            Some(intent) => corrections::apply(&intent.body_raw),
-            None if matches!(format, Format::Plain) => corrections::apply(&raw),
-            None => raw.clone(),
+        if let Some((skill, mut vars)) = skill_match {
+            info!("[latency #{n}] running skill: {}", skill.name);
+
+            // Ensure [body] always resolves — use the full utterance if the
+            // classifier didn't explicitly extract it.
+            if !vars.contains_key("body") {
+                vars.insert("body".into(), raw.clone());
+            }
+            vars.insert("name".into(), user_name.clone());
+
+            let system_prompt = skills::interpolate(&skill.system_prompt, &vars);
+
+            let t_ollama = Instant::now();
+            let llm_output = if ai_on {
+                match self.ollama.generate(&system_prompt, 1024).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        warn!(
+                            "[latency #{n}] skill {}: ollama error ({e:?}); using body",
+                            skill.name
+                        );
+                        vars.get("body").cloned().unwrap_or_default()
+                    }
+                }
+            } else {
+                vars.get("body").cloned().unwrap_or_default()
+            };
+            let ollama_ms = t_ollama.elapsed().as_millis() as u64;
+
+            vars.insert("result".into(), llm_output);
+            let final_text = skills::interpolate(&skill.output_template, &vars);
+            let with_dict = crate::dictionary::apply_to_text(&final_text, &preserve_terms);
+            let trimmed = with_dict.trim().to_string();
+
+            if trimmed.is_empty() {
+                info!("[latency #{n}] skill {} produced empty output; skipping paste", skill.name);
+                self.set_tray(TrayState::Idle);
+                return Ok(());
+            }
+
+            let t_paste = Instant::now();
+            paste_text(&trimmed)?;
+            let paste_ms = t_paste.elapsed().as_millis() as u64;
+            let total_ms = t_release.elapsed().as_millis() as u64;
+            info!(
+                "[latency #{n}] skill={} audio={audio_ms}ms whisper={whisper_ms}ms \
+                 ollama={ollama_ms}ms paste={paste_ms}ms total={total_ms}ms text={trimmed:?}",
+                skill.name
+            );
+            self.set_tray(TrayState::Transcribed);
+            return Ok(());
+        }
+
+        // ── Default cleanup path (no skill matched) ──────────────────────────
+        //
+        // Handles plain prose (Ollama polish + corrections) and list formats
+        // (bullets / numbered, detected deterministically).
+
+        let format = formatter::detect(&raw);
+
+        let body_for_cleanup = if matches!(format, Format::Plain) {
+            corrections::apply(&raw)
+        } else {
+            raw.clone()
         };
 
         let t_ollama_start = Instant::now();
-        let (polished, ollama_ms, ollama_used) = match (&email_intent, format) {
-            (Some(_), _) | (None, Format::Plain) if ai_on => {
+        let (polished, ollama_ms, ollama_used) = match format {
+            Format::Plain if ai_on => {
                 match self
                     .ollama
                     .polish_with_terms(&body_for_cleanup, &preserve_terms)
@@ -538,36 +575,19 @@ impl AppState {
                     }
                 }
             }
-            (Some(_), _) | (None, Format::Plain) => {
+            Format::Plain => {
                 info!("[latency #{n}] AI cleanup disabled — using corrected transcript");
                 (body_for_cleanup.clone(), 0, false)
             }
-            (None, Format::Bullets) | (None, Format::Numbered) => {
-                info!("[latency #{n}] format detected: {:?} (skipping ollama)", format);
+            Format::Bullets | Format::Numbered => {
+                info!("[latency #{n}] format={:?} (skipping ollama)", format);
                 (formatter::apply(&raw, format), 0, false)
             }
         };
 
-        // Wrap polished body in email template if that's the detected intent.
-        // Sign-off lives in the email skill's markdown now, so we read it
-        // from the loaded skill's output template rather than a setting.
-        let after_corrections = if let Some(intent) = &email_intent {
-            let sign_off = email_sign_off_from_skill(&self.skills.lock());
-            info!(
-                "[latency #{n}] email mode → recipient={}, sign_off={}, user_name={}",
-                intent.recipient,
-                sign_off,
-                if user_name.is_empty() { "(unset)" } else { &user_name }
-            );
-            email::format(intent, &polished, &sign_off, &user_name)
-        } else {
-            polished
-        };
-        // Deterministic dictionary post-processor: rewrites "home lane" ->
-        // "HomeLane", "homelane" -> "HomeLane" etc. Runs AFTER cleanup /
-        // corrections because both can reshape the surface text.
-        let with_dict = crate::dictionary::apply_to_text(&after_corrections, &preserve_terms);
+        let with_dict = crate::dictionary::apply_to_text(&polished, &preserve_terms);
         let trimmed = with_dict.trim().to_string();
+
         if trimmed.is_empty() {
             info!("[latency #{n}] audio={audio_ms}ms whisper={whisper_ms}ms — empty transcript");
             self.set_tray(TrayState::Idle);
@@ -582,7 +602,9 @@ impl AppState {
         let ollama_tag = if ollama_used { "ollama" } else { "ollama-skipped" };
 
         info!(
-            "[latency #{n}] audio={audio_ms}ms whisper={whisper_ms}ms {ollama_tag}={ollama_ms}ms paste={paste_ms}ms total={total_ms}ms chars={char_count} text={trimmed:?}"
+            "[latency #{n}] audio={audio_ms}ms whisper={whisper_ms}ms \
+             {ollama_tag}={ollama_ms}ms paste={paste_ms}ms total={total_ms}ms \
+             chars={char_count} text={trimmed:?}"
         );
 
         self.set_tray(TrayState::Transcribed);

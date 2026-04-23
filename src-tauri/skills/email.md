@@ -1,36 +1,24 @@
 ---
 name: email
 description: Format a dictated thought as a polite email
-native: email
 ---
 
-## Triggers
-- email to <recipient> <body>
-- email for <recipient> <body>
-- draft email to <recipient> <body>
-- compose email for <recipient> <body>
-- compose email to <recipient> <body>
-- send email to <recipient> <body>
-- write email to <recipient> <body>
+## Intent
+The user wants to send or compose an email to a specific person.
+Extract: recipient (the person's name), body (what they want to say)
 
 ## System Prompt
-Polish the following spoken thought as the body of a polite email to <recipient>.
-Return only the body paragraph(s) — greeting and sign-off are added by the template.
+Polish the following as the body of a polite email to [recipient].
+Fix punctuation and capitalization. Remove filler words (um, uh, like, you know).
+Capitalize the pronoun "I", weekdays, and months.
+Keep every piece of content the user mentioned. Do not add a greeting or sign-off — those are added by the template.
 
-Rules:
-- Preserve every piece of content the user said
-- Fix punctuation and capitalization
-- Remove filler words (um, uh, like, you know)
-- Do NOT paraphrase or add new information
-- Weekdays, months, and the pronoun "I" must be capitalized
-
-User's dictation:
-<body>
+[body]
 
 ## Output Template
-Hi <recipient>,
+Hi [recipient],
 
-<llm_output>
+[result]
 
 Best,
-<user_name>
+[name]

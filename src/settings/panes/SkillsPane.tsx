@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 type Skill = {
   name: string;
   description: string;
+  intent: string | null;
   triggers: string[];
   source: "default" | "custom";
   native: string | null;
@@ -20,18 +21,17 @@ name: my-skill
 description: One-line description shown in Settings
 ---
 
-## Triggers
-- my skill <body>
+## Intent
+Describe in plain English when this skill should activate.
+Extract: body (what the user said)
 
 ## System Prompt
-Restructure the following:
+You are helping with [body].
 
-<body>
-
-Return only the polished text.
+Return only the result, nothing else.
 
 ## Output Template
-<llm_output>
+[result]
 `;
 
 export function SkillsPane() {
@@ -119,29 +119,30 @@ export function SkillsPane() {
                   </div>
                   {open && (
                     <div className="row-details">
-                      <div className="detail-row">
-                        <span className="subtle">Say one of</span>
-                        <ul className="trigger-list">
-                          {s.triggers.map((t, i) => (
-                            <li key={i}>
-                              <code>{prettyTrigger(t)}</code>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                      {s.native && (
+                      {s.intent ? (
                         <div className="detail-row">
-                          <span className="subtle">Native hook</span>
-                          <code>{s.native}</code>
+                          <span className="subtle">Activated when</span>
+                          <span>{s.intent}</span>
                         </div>
-                      )}
+                      ) : s.triggers.length > 0 ? (
+                        <div className="detail-row">
+                          <span className="subtle">Say one of</span>
+                          <ul className="trigger-list">
+                            {s.triggers.map((t, i) => (
+                              <li key={i}>
+                                <code>{prettyTrigger(t)}</code>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
                       <div className="detail-actions">
                         <button
                           type="button"
                           className="primary"
                           onClick={() => setMode({ kind: "edit", name: s.name })}
                         >
-                          Edit markdown
+                          Edit
                         </button>
                       </div>
                     </div>
@@ -156,19 +157,21 @@ export function SkillsPane() {
       <div className="pane-section">
         <h2>How skills work</h2>
         <p className="subtle">
-          Every skill is a markdown file with three sections: frontmatter
-          (name, description), <code>## Triggers</code> (bulleted phrases
-          users say to activate the skill), and <code>## System Prompt</code>{" "}
-          (sent to Ollama). Optional <code>## Output Template</code> wraps
-          the response.
+          Each skill is a markdown file with three sections:{" "}
+          <code>## Intent</code> (plain English — when should this skill
+          activate?), <code>## System Prompt</code> (instructions sent to
+          Ollama), and <code>## Output Template</code> (shapes the final
+          pasted text).
         </p>
         <p className="hint-callout">
-          Use <span className="ph">{"<name>"}</span> to mark a placeholder.
-          A placeholder captures one word — except the LAST one in a trigger,
-          which captures the rest of what you said. The same names are
-          available anywhere in the prompt and template, plus built-ins{" "}
-          <span className="ph">{"<user_name>"}</span> and{" "}
-          <span className="ph">{"<llm_output>"}</span>.
+          Use <span className="ph">{"[name]"}</span> as a placeholder anywhere
+          in the prompt or template. The special ones are{" "}
+          <span className="ph">{"[result]"}</span> (the AI's response),{" "}
+          <span className="ph">{"[name]"}</span> (your name from Settings),
+          and <span className="ph">{"[body]"}</span> (what you said). Any
+          variable named in the <code>Extract:</code> line of{" "}
+          <code>## Intent</code> is also available — the AI pulls it from your
+          speech automatically.
         </p>
       </div>
 

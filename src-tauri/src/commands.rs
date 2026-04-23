@@ -98,13 +98,15 @@ pub struct SettingsUpdate {
 pub struct SkillInfo {
     pub name: String,
     pub description: String,
-    /// Plain-English trigger phrases the user wrote in the skill's
-    /// `## Triggers` section. Shown verbatim in the UI.
+    /// Plain-English activation description from `## Intent`. Present for
+    /// intent-based (new) skills.
+    pub intent: Option<String>,
+    /// Legacy trigger phrases from `## Triggers`. Present for pattern-based
+    /// (old) skills. Empty for intent-based skills.
     pub triggers: Vec<String>,
-    pub source: String, // "builtin" | "user"
+    pub source: String, // "default" | "custom"
     pub native: Option<String>,
-    /// True if a factory/built-in version ships with the app under this
-    /// name. Used by the UI to show "Reset to default" instead of "Delete".
+    /// True if a factory/built-in version ships with the app under this name.
     pub has_builtin_default: bool,
 }
 
@@ -117,6 +119,7 @@ pub fn skill_list(state: State<'_, Arc<AppState>>) -> Vec<SkillInfo> {
         .map(|s| SkillInfo {
             name: s.name.clone(),
             description: s.description.clone(),
+            intent: s.intent.clone(),
             triggers: s.trigger_templates(),
             source: s.source.as_str().to_string(),
             native: s.native.clone(),
