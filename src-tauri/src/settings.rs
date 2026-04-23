@@ -12,6 +12,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 pub const KEY_WHISPER_MODEL: &str = "whisper_model";
+pub const KEY_USER_NAME: &str = "user_name";
+pub const KEY_AI_CLEANUP: &str = "ai_cleanup_enabled";
+pub const KEY_EMAIL_SIGN_OFF: &str = "email_sign_off";
+
+pub const DEFAULT_AI_CLEANUP: bool = true;
+pub const DEFAULT_SIGN_OFF: &str = "Best";
 
 pub struct Settings {
     conn: Arc<Mutex<Connection>>,

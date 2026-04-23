@@ -12,10 +12,14 @@ use crate::audio::AudioRecorder;
 use crate::cleanup::OllamaClient;
 use crate::corrections;
 use crate::dictionary::Dictionary;
+use crate::email;
 use crate::formatter::{self, Format};
 use crate::model::{ensure_model, WhisperModel, CANCELLED_MSG};
 use crate::paste::paste_text;
-use crate::settings::{Settings, KEY_WHISPER_MODEL};
+use crate::settings::{
+    Settings, DEFAULT_AI_CLEANUP, DEFAULT_SIGN_OFF, KEY_AI_CLEANUP, KEY_EMAIL_SIGN_OFF,
+    KEY_USER_NAME, KEY_WHISPER_MODEL,
+};
 use crate::transcribe::Transcriber;
 use crate::tray::{self, TrayState};
 
@@ -356,9 +360,18 @@ impl AppState {
 
         let preserve_terms: Vec<String> = dict_words.into_iter().map(|e| e.word).collect();
 
-        // Detect format FIRST on the raw transcript — "bullet list…" and
-        // "ordinal list…" trigger words are only meaningful at the start.
-        let format = formatter::detect(&raw);
+        // Detect intents on the raw transcript before any processing.
+        //   email  — "email to John about…" → structured greeting/body/sign-off
+        //   format — "bullet list …" / "ordinal list …" → structured list
+        //   plain  — normal prose
+        let email_intent = email::detect(&raw);
+        let format = if email_intent.is_some() {
+            // Skip list detection when it's an email — email body may contain
+            // "bullet list …" phrases legitimately.
+            Format::Plain
+        } else {
+            formatter::detect(&raw)
+        };
 
         // Mid-sentence corrections run BEFORE Ollama for prose. This is
         // important: if we leave "X actually Y" for Ollama to see, the
@@ -366,36 +379,65 @@ impl AppState {
         // "Tuesday I mean Wednesday" became just "Tuesday"). Applying
         // the deterministic regex first means Ollama only ever receives
         // the final corrected text.
-        let raw_or_corrected = if matches!(format, Format::Plain) {
-            corrections::apply(&raw)
-        } else {
-            raw.clone()
+        let ai_on = self
+            .settings
+            .get(KEY_AI_CLEANUP)
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse::<bool>().ok())
+            .unwrap_or(DEFAULT_AI_CLEANUP);
+
+        // If this is an email, corrections apply to the body only; wrap
+        // later. Otherwise apply to the whole raw.
+        let body_for_cleanup: String = match &email_intent {
+            Some(intent) => corrections::apply(&intent.body_raw),
+            None if matches!(format, Format::Plain) => corrections::apply(&raw),
+            None => raw.clone(),
         };
 
         let t_ollama_start = Instant::now();
-        let (polished, ollama_ms, ollama_used) = match format {
-            Format::Plain => match self
-                .ollama
-                .polish_with_terms(&raw_or_corrected, &preserve_terms)
-                .await
-            {
-                Ok(p) => {
-                    let ms = t_ollama_start.elapsed().as_millis() as u64;
-                    (p, ms, true)
+        let (polished, ollama_ms, ollama_used) = match (&email_intent, format) {
+            (Some(_), _) | (None, Format::Plain) if ai_on => {
+                match self
+                    .ollama
+                    .polish_with_terms(&body_for_cleanup, &preserve_terms)
+                    .await
+                {
+                    Ok(p) => {
+                        let ms = t_ollama_start.elapsed().as_millis() as u64;
+                        (p, ms, true)
+                    }
+                    Err(e) => {
+                        let ms = t_ollama_start.elapsed().as_millis() as u64;
+                        warn!("[latency #{n}] cleanup skipped ({e:?}), using corrected transcript");
+                        (body_for_cleanup.clone(), ms, false)
+                    }
                 }
-                Err(e) => {
-                    let ms = t_ollama_start.elapsed().as_millis() as u64;
-                    warn!("[latency #{n}] cleanup skipped ({e:?}), using corrected transcript");
-                    (raw_or_corrected.clone(), ms, false)
-                }
-            },
-            Format::Bullets | Format::Numbered => {
+            }
+            (Some(_), _) | (None, Format::Plain) => {
+                info!("[latency #{n}] AI cleanup disabled — using corrected transcript");
+                (body_for_cleanup.clone(), 0, false)
+            }
+            (None, Format::Bullets) | (None, Format::Numbered) => {
                 info!("[latency #{n}] format detected: {:?} (skipping ollama)", format);
                 (formatter::apply(&raw, format), 0, false)
             }
         };
 
-        let after_corrections = polished;
+        // Wrap polished body in email template if that's the detected intent.
+        let after_corrections = if let Some(intent) = &email_intent {
+            let user_name = self.settings.get_or_default(KEY_USER_NAME, "");
+            let sign_off = self.settings.get_or_default(KEY_EMAIL_SIGN_OFF, DEFAULT_SIGN_OFF);
+            info!(
+                "[latency #{n}] email mode → recipient={}, sign_off={}, user_name={}",
+                intent.recipient,
+                sign_off,
+                if user_name.is_empty() { "(unset)" } else { &user_name }
+            );
+            email::format(intent, &polished, &sign_off, &user_name)
+        } else {
+            polished
+        };
         // Deterministic dictionary post-processor: rewrites "home lane" ->
         // "HomeLane", "homelane" -> "HomeLane" etc. Runs AFTER cleanup /
         // corrections because both can reshape the surface text.

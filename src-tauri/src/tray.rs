@@ -96,6 +96,7 @@ pub fn build_tray(app: &AppHandle) -> Result<()> {
             let id = event.id.as_ref();
             match id {
                 "quit" => app.exit(0),
+                "settings" => open_settings_window(app),
                 "dictionary" => open_dictionary_window(app),
                 "legend" => open_legend_window(app),
                 other => {
@@ -207,6 +208,10 @@ pub fn open_legend_window(app: &AppHandle) {
     open_window(app, "legend", "Svara — Status Legend", 460.0, 560.0);
 }
 
+pub fn open_settings_window(app: &AppHandle) {
+    open_window(app, "settings", "Svara — Settings", 560.0, 720.0);
+}
+
 // ── menu construction ──────────────────────────────────────────────────────
 
 fn build_menu(app: &AppHandle) -> Result<Menu<Wry>> {
@@ -226,6 +231,7 @@ fn build_menu(app: &AppHandle) -> Result<Menu<Wry>> {
         false,
         None::<&str>,
     )?;
+    let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
     let dictionary = MenuItem::with_id(app, "dictionary", "Dictionary…", true, None::<&str>)?;
     let legend = MenuItem::with_id(app, "legend", "Status Legend…", true, None::<&str>)?;
     let model_submenu = build_model_submenu(app)?;
@@ -238,6 +244,7 @@ fn build_menu(app: &AppHandle) -> Result<Menu<Wry>> {
             &status_item,
             &hotkey_item,
             &sep,
+            &settings,
             &dictionary,
             &legend,
             &model_submenu,

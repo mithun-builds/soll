@@ -12,6 +12,7 @@ mod tray;
 pub mod cleanup;
 pub mod corrections;
 pub mod dictionary;
+pub mod email;
 pub mod formatter;
 pub mod metal;
 pub mod model;
@@ -44,6 +45,8 @@ pub fn run() {
             commands::dict_list,
             commands::dict_add,
             commands::dict_remove,
+            commands::settings_get,
+            commands::settings_set,
         ])
         .plugin(
             tauri_plugin_log::Builder::new()

@@ -367,3 +367,182 @@ body,
   font-size: 12px;
   margin-top: 2px;
 }
+
+/* Settings window */
+.settings {
+  padding: 24px 24px 0 24px;
+  height: 100vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.settings-header h1 {
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  margin-bottom: 4px;
+}
+
+.settings-form,
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.settings-label .hint {
+  font-weight: 400;
+  font-size: 12.5px;
+}
+
+.settings input[type="text"] {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 10px 14px;
+  font-size: 14px;
+  font-family: inherit;
+  border-radius: 8px;
+  outline: none;
+  transition: border-color 120ms ease;
+}
+.settings input[type="text"]:focus {
+  border-color: var(--accent);
+}
+
+.settings-save {
+  align-self: flex-start;
+  background: var(--accent);
+  color: var(--accent-ink);
+  border: none;
+  padding: 10px 22px;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  border-radius: 8px;
+  cursor: pointer;
+  min-width: 110px;
+  transition: opacity 120ms ease;
+}
+.settings-save:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.settings-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  justify-content: space-between;
+  padding: 14px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.settings-title {
+  font-weight: 500;
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+
+.settings-toggle {
+  width: 42px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+  position: relative;
+  transition: background 120ms ease;
+  flex-shrink: 0;
+}
+.settings-toggle.on {
+  background: #22c55e;
+  border-color: #22c55e;
+}
+.settings-toggle-dot {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: white;
+  transition: transform 140ms ease;
+}
+.settings-toggle.on .settings-toggle-dot {
+  transform: translateX(16px);
+}
+
+.settings-readonly {
+  padding: 14px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.settings-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  font-size: 13px;
+}
+
+.settings code {
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.settings-section h2 {
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.005em;
+}
+
+.settings-example {
+  padding: 14px;
+  background: rgba(253, 224, 71, 0.06);
+  border: 1px solid rgba(253, 224, 71, 0.15);
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.settings-example pre {
+  margin-top: 6px;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.settings-error {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.settings-loading {
+  color: var(--fg-subtle);
+  text-align: center;
+  padding: 40px;
+}
