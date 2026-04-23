@@ -4,6 +4,7 @@ description: Format a dictated thought as a polite email
 ---
 
 ## Triggers
+- email <recipient> <body>
 - email to <recipient> <body>
 - email for <recipient> <body>
 - draft email to <recipient> <body>
