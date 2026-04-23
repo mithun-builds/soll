@@ -1,45 +1,44 @@
 //! User-extensible skills system. Each skill is a single markdown file
 //! describing:
 //!
-//!   1. Frontmatter metadata
-//!      - name: stable id
-//!      - description: one-liner for the UI
-//!      - trigger: regex (anchored ^) that matches the start of raw speech
-//!      - capture: comma-separated names for the regex groups
-//!      - (optional) native: hook into a hardcoded Rust path by this key
+//!   1. YAML-lite frontmatter:
+//!      name        — stable id
+//!      description — one-liner for the UI
+//!      native      — optional hook key (e.g. "email") into hardcoded logic
 //!
-//!   2. ## System Prompt — sent to Ollama with `{{var}}` substitutions
-//!   3. ## Output Template — wraps Ollama's response, also supports `{{var}}`
+//!   2. `## Triggers` section — bulleted list of plain-English phrases.
+//!      Each phrase may contain:
+//!        {name}        single word/name (letters, digits, hyphen, apostrophe)
+//!        {name...}     everything until end-of-utterance
+//!      Whitespace + common punctuation between literal words is flexible.
+//!      First trigger that matches wins.
 //!
-//! Built-in variables available in both sections:
-//!   - captured regex group names (recipient, body, …)
-//!   - `{{llm_output}}` in the output template
-//!   - `{{user_name}}` and `{{sign_off}}` from the user's settings
+//!   3. `## System Prompt` — sent to Ollama with `{{var}}` substitutions
+//!      for captures + built-ins ({{body}}, {{user_name}}, {{sign_off}}).
 //!
-//! When a user dictation arrives we try each skill's trigger in order.
-//! First match wins. No match → fall through to the default pipeline
-//! (corrections / Ollama polish / format detection).
+//!   4. `## Output Template` — wraps Ollama's response ({{llm_output}} + caps).
+//!      Optional; defaults to `{{llm_output}}`.
 
 use anyhow::{anyhow, Context, Result};
 use regex::Regex;
 use std::collections::HashMap;
 
-/// Parsed skill definition loaded from a `.md` file.
 #[derive(Debug, Clone)]
 pub struct Skill {
     pub name: String,
     pub description: String,
-    pub trigger: Regex,
-    pub capture_names: Vec<String>,
-    /// If set, dispatch via a hardcoded implementation (e.g. "email" maps
-    /// to the rich email template + capitalization pass). The system
-    /// prompt and output template are still used for non-native handling
-    /// if the native hook is unavailable.
+    pub triggers: Vec<TriggerPattern>,
     pub native: Option<String>,
     pub system_prompt: String,
     pub output_template: String,
-    /// Where the skill was loaded from — informs the UI.
     pub source: SkillSource,
+}
+
+#[derive(Debug, Clone)]
+pub struct TriggerPattern {
+    pub template: String,
+    regex: Regex,
+    capture_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,12 +56,110 @@ impl SkillSource {
     }
 }
 
-/// Result of invoking a skill — either a ready-to-paste string (skills
-/// that own their whole output) or instructions for the pipeline.
-#[derive(Debug, Clone)]
-pub struct SkillMatch {
-    pub skill_name: String,
-    pub vars: HashMap<String, String>,
+impl TriggerPattern {
+    /// Compile a trigger template (or a raw regex if the template starts
+    /// with `^`) into an executable pattern. Returns an error on malformed
+    /// placeholders.
+    pub fn compile(template: &str) -> Result<Self> {
+        let t = template.trim();
+        if t.is_empty() {
+            return Err(anyhow!("trigger template is empty"));
+        }
+
+        // Escape hatch for advanced users — raw regex starting with `^`
+        // bypasses the template compiler. Captures get auto-named $1, $2, …
+        if t.starts_with('^') {
+            let re = Regex::new(&format!("(?i){}", t))
+                .with_context(|| format!("invalid regex trigger: {t}"))?;
+            let n = re.captures_len().saturating_sub(1);
+            let capture_names: Vec<String> = (1..=n).map(|i| format!("g{i}")).collect();
+            return Ok(TriggerPattern {
+                template: t.to_string(),
+                regex: re,
+                capture_names,
+            });
+        }
+
+        // Simple-English template: split on whitespace, render each token
+        // as either a literal or a capture group. Join tokens with a
+        // flexible whitespace-or-punctuation separator so speech with
+        // different punctuation still matches.
+        let mut parts = Vec::new();
+        let mut capture_names = Vec::new();
+
+        for tok in t.split_whitespace() {
+            if let Some(inner) = tok.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+                let (raw_name, greedy) = match inner.strip_suffix("...") {
+                    Some(n) => (n, true),
+                    None => (inner, false),
+                };
+                let name = raw_name.trim();
+                if name.is_empty() {
+                    return Err(anyhow!("empty placeholder `{{...}}` in `{t}`"));
+                }
+                if !name
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                {
+                    return Err(anyhow!(
+                        "placeholder name must be alphanumeric (got `{name}`)"
+                    ));
+                }
+                if greedy {
+                    parts.push(r"(.+)".to_string());
+                } else {
+                    // Single-word: letters + digits + hyphen + apostrophe
+                    parts.push(r"([A-Za-z][A-Za-z0-9\-'_]*)".to_string());
+                }
+                capture_names.push(name.to_string());
+            } else {
+                // Literal: strip surrounding punctuation, escape the rest.
+                // That way "email," and "email" in a template both match
+                // "email" with optional trailing punctuation in speech.
+                let bare = tok.trim_matches(|c: char| !c.is_alphanumeric());
+                if bare.is_empty() {
+                    continue;
+                }
+                parts.push(regex::escape(bare));
+            }
+        }
+
+        if parts.is_empty() {
+            return Err(anyhow!("trigger `{t}` has no content"));
+        }
+
+        // Between every pair of parts, allow whitespace and/or one piece
+        // of punctuation. At both ends, allow leading/trailing padding.
+        let body = parts.join(r"[\s,.?!;:]+");
+        let pat = format!(r"(?i)^\s*{body}\s*[.?!]?\s*$");
+        let regex = Regex::new(&pat).with_context(|| format!("compiling `{t}`"))?;
+        Ok(TriggerPattern {
+            template: t.to_string(),
+            regex,
+            capture_names,
+        })
+    }
+
+    /// Try to match the raw text. Returns variable bindings on success.
+    pub fn match_vars(&self, raw: &str) -> Option<HashMap<String, String>> {
+        let caps = self.regex.captures(raw.trim())?;
+        let mut vars = HashMap::new();
+        for (i, name) in self.capture_names.iter().enumerate() {
+            if let Some(m) = caps.get(i + 1) {
+                vars.insert(name.clone(), m.as_str().trim().to_string());
+            }
+        }
+        for name in &self.capture_names {
+            if vars.get(name).map(|v| v.is_empty()).unwrap_or(true) {
+                return None;
+            }
+        }
+        Some(vars)
+    }
+
+    pub fn capture_names(&self) -> &[String] {
+        &self.capture_names
+    }
 }
 
 impl Skill {
@@ -75,33 +172,47 @@ impl Skill {
             .cloned()
             .ok_or_else(|| anyhow!("skill missing `name`"))?;
         let description = meta.get("description").cloned().unwrap_or_default();
-        let trigger_str = meta
-            .get("trigger")
-            .cloned()
-            .ok_or_else(|| anyhow!("skill `{name}` missing `trigger`"))?;
-        let trigger = Regex::new(&format!("(?i){}", trigger_str))
-            .with_context(|| format!("skill `{name}` invalid trigger regex: {trigger_str}"))?;
-        let capture_names = meta
-            .get("capture")
-            .map(|s| {
-                s.split(',')
-                    .map(|p| p.trim().to_string())
-                    .filter(|p| !p.is_empty())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
         let native = meta.get("native").cloned();
+
+        // Triggers come from the `## Triggers` bulleted-list section.
+        let triggers_section = extract_section(body, "Triggers")
+            .with_context(|| format!("skill `{name}` missing `## Triggers` section"))?;
+        let trigger_templates: Vec<String> = triggers_section
+            .lines()
+            .filter_map(|l| {
+                let line = l.trim();
+                let line = line
+                    .strip_prefix('-')
+                    .or_else(|| line.strip_prefix('*'))
+                    .unwrap_or(line)
+                    .trim();
+                if line.is_empty() {
+                    None
+                } else {
+                    Some(line.to_string())
+                }
+            })
+            .collect();
+        if trigger_templates.is_empty() {
+            return Err(anyhow!(
+                "skill `{name}` has no triggers (add `- phrase` lines under ## Triggers)"
+            ));
+        }
+        let triggers: Vec<TriggerPattern> = trigger_templates
+            .iter()
+            .map(|t| TriggerPattern::compile(t))
+            .collect::<Result<Vec<_>>>()
+            .with_context(|| format!("skill `{name}` trigger compile failed"))?;
 
         let system_prompt = extract_section(body, "System Prompt")
             .with_context(|| format!("skill `{name}` missing `## System Prompt` section"))?;
-        let output_template = extract_section(body, "Output Template")
-            .unwrap_or_else(|_| "{{llm_output}}".to_string());
+        let output_template =
+            extract_section(body, "Output Template").unwrap_or_else(|_| "{{llm_output}}".into());
 
         Ok(Skill {
             name,
             description,
-            trigger,
-            capture_names,
+            triggers,
             native,
             system_prompt,
             output_template,
@@ -109,24 +220,14 @@ impl Skill {
         })
     }
 
-    /// If the skill's trigger regex matches, return the variable bindings
-    /// (capture names → values). Returns None otherwise.
+    /// Try each trigger in order; return captures from the first match.
     pub fn matches(&self, raw: &str) -> Option<HashMap<String, String>> {
-        let caps = self.trigger.captures(raw.trim())?;
-        let mut vars = HashMap::new();
-        for (i, name) in self.capture_names.iter().enumerate() {
-            if let Some(m) = caps.get(i + 1) {
-                vars.insert(name.clone(), m.as_str().trim().to_string());
+        for t in &self.triggers {
+            if let Some(vars) = t.match_vars(raw) {
+                return Some(vars);
             }
         }
-        // Reject empty captures — "email to John" with no body shouldn't
-        // match a skill whose prompt needs a body.
-        for name in &self.capture_names {
-            if vars.get(name).map(|v| v.is_empty()).unwrap_or(true) {
-                return None;
-            }
-        }
-        Some(vars)
+        None
     }
 
     pub fn interpolate(&self, template: &str, vars: &HashMap<String, String>) -> String {
@@ -137,10 +238,13 @@ impl Skill {
         }
         out
     }
+
+    /// Human-readable trigger phrases for the UI.
+    pub fn trigger_templates(&self) -> Vec<String> {
+        self.triggers.iter().map(|t| t.template.clone()).collect()
+    }
 }
 
-/// Load all built-in skills embedded in the binary. User-supplied skills
-/// from the app data directory are merged by `load_all` below.
 pub fn builtin() -> Vec<Skill> {
     let mut out = Vec::new();
     for md in [
@@ -155,8 +259,6 @@ pub fn builtin() -> Vec<Skill> {
     out
 }
 
-/// Load built-in skills plus any `*.md` files the user has dropped in
-/// `$APP_DATA/skills/`. Errors on user files are logged, not fatal.
 pub fn load_all(user_dir: Option<&std::path::Path>) -> Vec<Skill> {
     let mut out = builtin();
     if let Some(dir) = user_dir {
@@ -189,8 +291,10 @@ pub fn load_all(user_dir: Option<&std::path::Path>) -> Vec<Skill> {
     out
 }
 
-/// First-match-wins skill lookup.
-pub fn match_skill<'a>(skills: &'a [Skill], raw: &str) -> Option<(&'a Skill, HashMap<String, String>)> {
+pub fn match_skill<'a>(
+    skills: &'a [Skill],
+    raw: &str,
+) -> Option<(&'a Skill, HashMap<String, String>)> {
     for s in skills {
         if let Some(vars) = s.matches(raw) {
             return Some((s, vars));
@@ -226,93 +330,156 @@ fn parse_frontmatter(fm: &str) -> HashMap<String, String> {
     map
 }
 
-/// Extract the content under a `## {name}` heading up to the next `## `
-/// heading or end of file. Returns the body trimmed.
 fn extract_section(body: &str, name: &str) -> Result<String> {
     let heading = format!("## {name}");
     let start = body
         .find(&heading)
         .ok_or_else(|| anyhow!("section `{name}` not found"))?;
-    let after = &body[start + heading.len()..];
-    // Drop to next newline to skip any trailing heading text
-    let after = after.trim_start_matches(|c: char| c != '\n').trim_start_matches('\n');
-    let end = after.find("\n## ").unwrap_or(after.len());
-    Ok(after[..end].trim().to_string())
+    let after_heading = &body[start + heading.len()..];
+    // Consume the rest of the heading line up to and including its newline
+    // so the section body proper starts after it.
+    let after_line = match after_heading.find('\n') {
+        Some(nl) => &after_heading[nl + 1..],
+        None => "",
+    };
+    // The section ends at the next "## " heading or end-of-body. We leave
+    // the preceding "\n" in the match so sections separated by a blank
+    // line still terminate cleanly.
+    let end = after_line.find("\n## ").unwrap_or(after_line.len());
+    Ok(after_line[..end].trim().to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // ── template compiler ──────────────────────────────────────
+
+    #[test]
+    fn compiles_simple_template() {
+        let p = TriggerPattern::compile("email to {recipient} {body...}").unwrap();
+        let vars = p
+            .match_vars("email to Jane can we push the launch")
+            .unwrap();
+        assert_eq!(vars.get("recipient").unwrap(), "Jane");
+        assert_eq!(
+            vars.get("body").unwrap(),
+            "can we push the launch"
+        );
+    }
+
+    #[test]
+    fn handles_hyphenated_names() {
+        let p = TriggerPattern::compile("email to {recipient} {body...}").unwrap();
+        let vars = p.match_vars("email to Mary-Jane hello").unwrap();
+        assert_eq!(vars.get("recipient").unwrap(), "Mary-Jane");
+    }
+
+    #[test]
+    fn handles_apostrophes() {
+        let p = TriggerPattern::compile("email to {recipient} {body...}").unwrap();
+        let vars = p.match_vars("email to O'Brien meeting today").unwrap();
+        assert_eq!(vars.get("recipient").unwrap(), "O'Brien");
+    }
+
+    #[test]
+    fn flexible_punctuation_between_literals() {
+        let p = TriggerPattern::compile("email to {recipient} {body...}").unwrap();
+        assert!(p.match_vars("email, to Jane hello").is_some());
+        assert!(p.match_vars("email. to Jane hello").is_some());
+        assert!(p.match_vars("email to, Jane, hello").is_some());
+    }
+
+    #[test]
+    fn greedy_placeholder_captures_rest() {
+        let p = TriggerPattern::compile("prompt {body...}").unwrap();
+        let vars = p
+            .match_vars("prompt write a python script that parses csv")
+            .unwrap();
+        assert_eq!(
+            vars.get("body").unwrap(),
+            "write a python script that parses csv"
+        );
+    }
+
+    #[test]
+    fn case_insensitive_match() {
+        let p = TriggerPattern::compile("email to {recipient} {body...}").unwrap();
+        assert!(p
+            .match_vars("EMAIL TO jane HELLO WORLD")
+            .is_some());
+    }
+
+    #[test]
+    fn rejects_empty_placeholder_name() {
+        assert!(TriggerPattern::compile("email {} body").is_err());
+    }
+
+    #[test]
+    fn rejects_empty_template() {
+        assert!(TriggerPattern::compile("   ").is_err());
+    }
+
+    #[test]
+    fn no_match_without_trigger_words() {
+        let p = TriggerPattern::compile("email to {recipient} {body...}").unwrap();
+        assert!(p.match_vars("hello world").is_none());
+    }
+
+    #[test]
+    fn raw_regex_passthrough() {
+        let p = TriggerPattern::compile(r"^\s*debug\s+(\w+)").unwrap();
+        let vars = p.match_vars("debug segfault here").unwrap();
+        assert_eq!(vars.get("g1").unwrap(), "segfault");
+    }
+
+    // ── full skill parsing ─────────────────────────────────────
+
     const SAMPLE: &str = r#"---
 name: test-skill
-description: A toy skill
-trigger: ^\s*debug\s+(.+)$
-capture: body
+description: A toy
 ---
 
+## Triggers
+- debug {body...}
+- fix {body...}
+
 ## System Prompt
-Debug this: {{body}}
+Debug: {{body}}
 
 ## Output Template
 DEBUG: {{llm_output}}
 "#;
 
     #[test]
-    fn parses_basic_skill() {
+    fn parses_multi_trigger_skill() {
         let s = Skill::from_markdown(SAMPLE).unwrap();
-        assert_eq!(s.name, "test-skill");
-        assert_eq!(s.description, "A toy skill");
-        assert_eq!(s.capture_names, vec!["body"]);
-        assert!(s.system_prompt.contains("Debug this: {{body}}"));
-        assert!(s.output_template.contains("DEBUG: {{llm_output}}"));
-    }
-
-    #[test]
-    fn matches_with_captures() {
-        let s = Skill::from_markdown(SAMPLE).unwrap();
-        let vars = s.matches("debug segfault in foo").unwrap();
-        assert_eq!(vars.get("body").unwrap(), "segfault in foo");
-    }
-
-    #[test]
-    fn no_match_on_unrelated_input() {
-        let s = Skill::from_markdown(SAMPLE).unwrap();
+        assert_eq!(s.triggers.len(), 2);
+        assert!(s.matches("debug memory leak").is_some());
+        assert!(s.matches("fix the button color").is_some());
         assert!(s.matches("hello world").is_none());
     }
 
     #[test]
-    fn interpolation_replaces_placeholders() {
+    fn first_matching_trigger_wins() {
         let s = Skill::from_markdown(SAMPLE).unwrap();
-        let mut vars = HashMap::new();
-        vars.insert("body".into(), "hello".into());
-        vars.insert("llm_output".into(), "reply".into());
-        assert_eq!(
-            s.interpolate(&s.system_prompt, &vars),
-            "Debug this: hello"
-        );
-        assert_eq!(
-            s.interpolate(&s.output_template, &vars),
-            "DEBUG: reply"
-        );
+        let vars = s.matches("debug foo").unwrap();
+        assert_eq!(vars.get("body").unwrap(), "foo");
     }
 
     #[test]
-    fn empty_body_rejected() {
-        // Trigger matches but body capture is empty — match() returns None.
-        let md = r#"---
-name: x
-trigger: ^prefix\s*(.*)$
-capture: body
----
-
-## System Prompt
-{{body}}
-"#;
-        let s = Skill::from_markdown(md).unwrap();
-        assert!(s.matches("prefix").is_none());
-        assert!(s.matches("prefix something").is_some());
+    fn missing_triggers_section_errors() {
+        let md = "---\nname: x\n---\n\n## System Prompt\nhi";
+        assert!(Skill::from_markdown(md).is_err());
     }
+
+    #[test]
+    fn empty_triggers_section_errors() {
+        let md = "---\nname: x\n---\n\n## Triggers\n\n## System Prompt\nhi";
+        assert!(Skill::from_markdown(md).is_err());
+    }
+
+    // ── built-ins ──────────────────────────────────────────────
 
     #[test]
     fn builtin_skills_all_parse() {
@@ -323,20 +490,40 @@ capture: body
     }
 
     #[test]
-    fn first_match_wins() {
+    fn builtin_email_matches_all_variants() {
         let skills = builtin();
-        // "email to Jane hello" hits email, not prompt-better.
-        let (hit, vars) = match_skill(&skills, "email to Jane hello there").unwrap();
-        assert_eq!(hit.name, "email");
-        assert_eq!(vars.get("recipient").unwrap(), "Jane");
+        for raw in [
+            "email to Jane hello world",
+            "draft email to Jane hello world",
+            "compose email for Jane hello world",
+            "send email to Jane hello world",
+        ] {
+            let (hit, vars) = match_skill(&skills, raw).unwrap_or_else(|| {
+                panic!("no match for: {raw}");
+            });
+            assert_eq!(hit.name, "email");
+            assert_eq!(vars.get("recipient").unwrap(), "Jane");
+        }
     }
 
     #[test]
-    fn prompt_better_triggers() {
+    fn builtin_prompt_better_matches() {
         let skills = builtin();
-        let (hit, vars) =
-            match_skill(&skills, "prompt write a python script to parse CSV").unwrap();
-        assert_eq!(hit.name, "prompt-better");
-        assert!(vars.get("body").unwrap().contains("python"));
+        for raw in [
+            "prompt write a python script",
+            "prompt about fixing a flaky test",
+            "make a prompt for my pr description",
+        ] {
+            let (hit, _) = match_skill(&skills, raw).unwrap_or_else(|| {
+                panic!("no match for: {raw}");
+            });
+            assert_eq!(hit.name, "prompt-better");
+        }
+    }
+
+    #[test]
+    fn plain_prose_matches_no_skill() {
+        let skills = builtin();
+        assert!(match_skill(&skills, "hello world how are you today").is_none());
     }
 }

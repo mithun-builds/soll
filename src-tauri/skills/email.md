@@ -1,10 +1,17 @@
 ---
 name: email
 description: Format a dictated thought as a polite email
-trigger: ^\s*(?:draft|compose|write|send)?\s*email\s+(?:to|for)?\s*([A-Za-z][a-zA-Z\-']{0,40})\s*[,.]?\s+(.+)$
-capture: recipient, body
 native: email
 ---
+
+## Triggers
+- email to {recipient} {body...}
+- email for {recipient} {body...}
+- draft email to {recipient} {body...}
+- compose email for {recipient} {body...}
+- compose email to {recipient} {body...}
+- send email to {recipient} {body...}
+- write email to {recipient} {body...}
 
 ## System Prompt
 Polish the following spoken thought as the body of a polite email to {{recipient}}.

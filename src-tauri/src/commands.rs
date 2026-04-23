@@ -104,7 +104,9 @@ pub struct SettingsUpdate {
 pub struct SkillInfo {
     pub name: String,
     pub description: String,
-    pub trigger: String,
+    /// Plain-English trigger phrases the user wrote in the skill's
+    /// `## Triggers` section. Shown verbatim in the UI.
+    pub triggers: Vec<String>,
     pub source: String, // "builtin" | "user"
     pub native: Option<String>,
 }
@@ -118,7 +120,7 @@ pub fn skill_list(state: State<'_, Arc<AppState>>) -> Vec<SkillInfo> {
         .map(|s| SkillInfo {
             name: s.name.clone(),
             description: s.description.clone(),
-            trigger: s.trigger.as_str().to_string(),
+            triggers: s.trigger_templates(),
             source: s.source.as_str().to_string(),
             native: s.native.clone(),
         })

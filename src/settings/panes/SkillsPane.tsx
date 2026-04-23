@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 type Skill = {
   name: string;
   description: string;
-  trigger: string;
+  triggers: string[];
   source: "builtin" | "user";
   native: string | null;
 };
@@ -31,9 +31,9 @@ export function SkillsPane() {
     <>
       <h1>Skills</h1>
       <p className="subtle">
-        Skills are markdown files that detect a trigger phrase and transform
-        your dictation. The first matching skill wins; unmatched speech
-        follows the default pipeline.
+        Skills are markdown files. When a dictation starts with one of a
+        skill's trigger phrases, that skill handles the whole transformation.
+        Speech that doesn't match any skill follows the default cleanup.
       </p>
 
       <div className="pane-section">
@@ -59,8 +59,14 @@ export function SkillsPane() {
                   {open && (
                     <div className="row-details">
                       <div className="detail-row">
-                        <span className="subtle">Trigger</span>
-                        <code className="trigger">{s.trigger}</code>
+                        <span className="subtle">Say one of</span>
+                        <ul className="trigger-list">
+                          {s.triggers.map((t, i) => (
+                            <li key={i}>
+                              <code>{prettyTrigger(t)}</code>
+                            </li>
+                          ))}
+                        </ul>
                       </div>
                       {s.native && (
                         <div className="detail-row">
@@ -81,8 +87,9 @@ export function SkillsPane() {
         <h2>Add your own</h2>
         <p className="subtle">
           Drop a <code>.md</code> file into the skills directory, then click
-          Reload. See the markdown format in{" "}
-          <code>src-tauri/skills/email.md</code> in the repo.
+          Reload. The file's <code>## Triggers</code> section lists plain-English
+          phrases users can say; <code>{"{name}"}</code> captures a single word,{" "}
+          <code>{"{name...}"}</code> captures the rest.
         </p>
         <p className="hint-callout">
           Skills directory:{" "}
@@ -99,6 +106,35 @@ export function SkillsPane() {
       </div>
 
       {err && <div className="pane-error">{err}</div>}
+    </>
+  );
+}
+
+// Wrap placeholder tokens in visually distinct spans so "{body...}" reads
+// like a parameter rather than a typo.
+function prettyTrigger(t: string): React.ReactNode {
+  // Simple split on {…} so we can style placeholders differently.
+  const parts: Array<{ text: string; placeholder: boolean }> = [];
+  const re = /\{[^}]+\}/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(t)) !== null) {
+    if (m.index > last) parts.push({ text: t.slice(last, m.index), placeholder: false });
+    parts.push({ text: m[0], placeholder: true });
+    last = m.index + m[0].length;
+  }
+  if (last < t.length) parts.push({ text: t.slice(last), placeholder: false });
+  return (
+    <>
+      {parts.map((p, i) =>
+        p.placeholder ? (
+          <span key={i} className="ph">
+            {p.text}
+          </span>
+        ) : (
+          <span key={i}>{p.text}</span>
+        ),
+      )}
     </>
   );
 }

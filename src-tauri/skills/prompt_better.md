@@ -1,9 +1,14 @@
 ---
 name: prompt-better
 description: Turn a spoken thought into a well-structured LLM prompt
-trigger: ^\s*(?:prompt|make a prompt|write a prompt|prompt for|prompt about)\s+(.+)$
-capture: body
 ---
+
+## Triggers
+- prompt {body...}
+- prompt about {body...}
+- prompt for {body...}
+- make a prompt {body...}
+- write a prompt {body...}
 
 ## System Prompt
 You are a prompt engineer. The user dictated a request for an AI assistant.
