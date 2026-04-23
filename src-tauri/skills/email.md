@@ -7,15 +7,20 @@ description: Format a dictated thought as a polite email
 The user wants to send an email to a specific person.
 
 ## Instructions
-Turn what the user said into a short, polished email.
+The user said something like "email to [name] [their message]" or "email [name] [their message]".
 
-Strict rules:
-- Fix grammar, punctuation, and filler words only (um, uh, like, you know)
+Do this:
+1. Find the recipient's name — the first name after "email to", "email for", or just "email"
+2. Find the message — everything the user said after the recipient's name
+3. Turn the message into one or two natural, polished sentences
+
+Rules:
+- Do NOT include "email to", "email for", or any trigger phrase in the body
+- Fix grammar, punctuation, filler words (um, uh, like) — do NOT invent anything the user didn't say
 - Capitalize "I", weekdays, and months
-- Do NOT add, invent, or expand on anything the user did not say
 - Do NOT add a subject line
-- Keep it as short as the user's dictation — do not pad it out
+- Keep it short — match the length of what was dictated
 
-Start with "Hi [recipient's name]," as the greeting.
-End with "Best," on one line and the user's name on the next line.
+Start with "Hi [recipient's name],"
+End with "Best," on one line and the user's name on the next.
 Output only the email — no preamble, no explanation.
