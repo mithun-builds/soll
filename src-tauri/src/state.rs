@@ -530,34 +530,61 @@ impl AppState {
         if let Some((skill, mut vars)) = skill_match {
             info!("[latency #{n}] running skill: {}", skill.name);
 
-            // Ensure [body] always resolves — use the full utterance if the
-            // classifier didn't explicitly extract it.
-            if !vars.contains_key("body") {
-                vars.insert("body".into(), raw.clone());
-            }
-            vars.insert("name".into(), user_name.clone());
-
-            let system_prompt = skills::interpolate(&skill.system_prompt, &vars);
-
             let t_ollama = Instant::now();
-            let llm_output = if ai_on {
-                match self.ollama.generate(&system_prompt, 1024).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        warn!(
-                            "[latency #{n}] skill {}: ollama error ({e:?}); using body",
-                            skill.name
-                        );
-                        vars.get("body").cloned().unwrap_or_default()
+
+            let final_text = if let Some(instructions) = &skill.instructions {
+                // ── New-style skill: plain-English instructions ──────────────
+                // Auto-append user name + transcription so the user never has
+                // to write [body] or [name] in their skill file.
+                if ai_on {
+                    let mut prompt = instructions.clone();
+                    prompt.push_str("\n\n---\n");
+                    if !user_name.is_empty() {
+                        prompt.push_str(&format!("User's name: {user_name}\n"));
                     }
+                    prompt.push_str(&format!("What they said: {raw}"));
+
+                    match self.ollama.generate(&prompt, 1024).await {
+                        Ok(s) => strip_llm_preamble(&s),
+                        Err(e) => {
+                            warn!(
+                                "[latency #{n}] skill {}: ollama error ({e:?}); using raw",
+                                skill.name
+                            );
+                            raw.clone()
+                        }
+                    }
+                } else {
+                    raw.clone()
                 }
             } else {
-                vars.get("body").cloned().unwrap_or_default()
+                // ── Legacy skill: [var] interpolation + output template ──────
+                if !vars.contains_key("body") {
+                    vars.insert("body".into(), raw.clone());
+                }
+                vars.insert("name".into(), user_name.clone());
+
+                let system_prompt = skills::interpolate(&skill.system_prompt, &vars);
+                let llm_output = if ai_on {
+                    match self.ollama.generate(&system_prompt, 1024).await {
+                        Ok(s) => strip_llm_preamble(&s),
+                        Err(e) => {
+                            warn!(
+                                "[latency #{n}] skill {}: ollama error ({e:?}); using body",
+                                skill.name
+                            );
+                            vars.get("body").cloned().unwrap_or_default()
+                        }
+                    }
+                } else {
+                    vars.get("body").cloned().unwrap_or_default()
+                };
+                vars.insert("result".into(), llm_output);
+                skills::interpolate(&skill.output_template, &vars)
             };
+
             let ollama_ms = t_ollama.elapsed().as_millis() as u64;
 
-            vars.insert("result".into(), strip_llm_preamble(&llm_output));
-            let final_text = skills::interpolate(&skill.output_template, &vars);
             let with_dict = crate::dictionary::apply_to_text(&final_text, &preserve_terms);
             let trimmed = with_dict.trim().to_string();
 

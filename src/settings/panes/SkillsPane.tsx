@@ -23,15 +23,13 @@ description: One-line description shown in Settings
 
 ## Intent
 Describe in plain English when this skill should activate.
-Extract: body (what the user said)
+Example: "The user wants to summarise a piece of text."
 
-## System Prompt
-You are helping with [body].
+## Instructions
+Write your instructions here in plain English.
+Describe the output format inline — just show it as you want it to appear.
 
-Return only the result, nothing else.
-
-## Output Template
-[result]
+The user's name and what they said are added automatically.
 `;
 
 export function SkillsPane() {
@@ -157,21 +155,16 @@ export function SkillsPane() {
       <div className="pane-section">
         <h2>How skills work</h2>
         <p className="subtle">
-          Each skill is a markdown file with three sections:{" "}
-          <code>## Intent</code> (plain English — when should this skill
-          activate?), <code>## System Prompt</code> (instructions sent to
-          Ollama), and <code>## Output Template</code> (shapes the final
-          pasted text).
+          Each skill is a markdown file with two sections:{" "}
+          <code>## Intent</code> (when should this activate?) and{" "}
+          <code>## Instructions</code> (what should the AI do?). That's it —
+          no special syntax, no variables to learn.
         </p>
         <p className="hint-callout">
-          Use <span className="ph">{"[name]"}</span> as a placeholder anywhere
-          in the prompt or template. The special ones are{" "}
-          <span className="ph">{"[result]"}</span> (the AI's response),{" "}
-          <span className="ph">{"[name]"}</span> (your name from Settings),
-          and <span className="ph">{"[body]"}</span> (what you said). Any
-          variable named in the <code>Extract:</code> line of{" "}
-          <code>## Intent</code> is also available — the AI pulls it from your
-          speech automatically.
+          In <code>## Instructions</code>, just write what you want in plain
+          English. Describe the output format inline — show it as you want it
+          to appear. The AI automatically knows what the user said and what
+          their name is, so you don't need to reference them explicitly.
         </p>
       </div>
 

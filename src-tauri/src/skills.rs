@@ -52,7 +52,13 @@ pub struct Skill {
     /// line in `## Intent`. E.g. `["recipient", "body"]`.
     pub extract_vars: Vec<String>,
     pub native: Option<String>,
+    /// Plain-English instructions from `## Instructions` (new-style skill).
+    /// When present, the system auto-appends the user's name and transcription
+    /// before sending to Ollama; the response is pasted directly.
+    pub instructions: Option<String>,
+    /// Legacy: explicit system prompt with `[var]` substitutions.
     pub system_prompt: String,
+    /// Legacy: output template assembled after the Ollama call.
     pub output_template: String,
     pub source: SkillSource,
     /// Raw markdown this skill was parsed from. Served to the editor UI.
@@ -249,10 +255,21 @@ impl Skill {
             Err(_) => (None, Vec::new()),
         };
 
-        let system_prompt = extract_section(body, "System Prompt")
-            .with_context(|| format!("skill `{name}` missing `## System Prompt` section"))?;
+        // `## Instructions` — new-style: plain English, no variable syntax.
+        // The system auto-appends user name + transcription before calling Ollama.
+        let instructions = extract_section(body, "Instructions").ok();
 
-        // Default output template is just [result] (bare LLM output)
+        // `## System Prompt` — legacy. Required only when `## Instructions` is absent.
+        let system_prompt = if instructions.is_none() {
+            extract_section(body, "System Prompt")
+                .with_context(|| format!(
+                    "skill `{name}` needs either `## Instructions` or `## System Prompt`"
+                ))?
+        } else {
+            extract_section(body, "System Prompt").unwrap_or_default()
+        };
+
+        // `## Output Template` — legacy. Defaults to bare [result] when absent.
         let output_template =
             extract_section(body, "Output Template").unwrap_or_else(|_| "[result]".into());
 
@@ -263,6 +280,7 @@ impl Skill {
             intent,
             extract_vars,
             native,
+            instructions,
             system_prompt,
             output_template,
             source: SkillSource::Builtin,
@@ -700,33 +718,38 @@ Handle [topic]: [body]
     }
 
     #[test]
-    fn builtin_email_has_intent() {
+    fn builtin_email_has_intent_and_instructions() {
         let skills = builtin();
         let email = skills.iter().find(|s| s.name == "email").unwrap();
         assert!(email.intent.is_some(), "email skill should have ## Intent");
-        assert!(
-            email.extract_vars.contains(&"recipient".to_string()),
-            "email should extract `recipient`"
-        );
-        assert!(
-            email.extract_vars.contains(&"body".to_string()),
-            "email should extract `body`"
-        );
+        assert!(email.instructions.is_some(), "email skill should have ## Instructions");
     }
 
     #[test]
-    fn builtin_prompt_better_has_intent() {
+    fn builtin_prompt_better_has_intent_and_instructions() {
         let skills = builtin();
         let pb = skills.iter().find(|s| s.name == "prompt-better").unwrap();
         assert!(pb.intent.is_some(), "prompt-better should have ## Intent");
+        assert!(pb.instructions.is_some(), "prompt-better should have ## Instructions");
     }
 
     #[test]
-    fn builtin_email_template_uses_square_brackets() {
+    fn builtin_email_has_instructions() {
         let skills = builtin();
         let email = skills.iter().find(|s| s.name == "email").unwrap();
-        assert!(email.output_template.contains("[recipient]"));
-        assert!(email.output_template.contains("[result]"));
-        assert!(email.output_template.contains("[name]"));
+        assert!(
+            email.instructions.is_some(),
+            "email skill should use ## Instructions"
+        );
+        // New-style skills don't need a system prompt or output template
+        let instr = email.instructions.as_ref().unwrap();
+        assert!(instr.contains("Best"), "sign-off should be described in instructions");
+    }
+
+    #[test]
+    fn builtin_prompt_better_has_instructions() {
+        let skills = builtin();
+        let pb = skills.iter().find(|s| s.name == "prompt-better").unwrap();
+        assert!(pb.instructions.is_some());
     }
 }

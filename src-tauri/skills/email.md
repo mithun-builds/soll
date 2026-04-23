@@ -4,27 +4,12 @@ description: Format a dictated thought as a polite email
 ---
 
 ## Intent
-The user wants to send or compose an email to a specific person.
-Extract: recipient (the person's name), body (what they want to say)
+The user wants to send an email to a specific person.
 
-## System Prompt
-Polish the following as the body of a polite email to [recipient].
-Fix punctuation and capitalization. Remove filler words (um, uh, like, you know).
+## Instructions
+Write a polished email. Fix grammar, remove filler words (um, uh, like, you know).
 Capitalize the pronoun "I", weekdays, and months.
 Keep every piece of content the user mentioned.
-
-Rules:
-- Output ONLY the polished body text — nothing else
-- Do NOT add a greeting ("Hi", "Dear") — the template adds it
-- Do NOT add a sign-off ("Best", "Thanks") — the template adds it
-- Do NOT add any preamble ("Here is the email:", "Sure!", "Here's the polished version:") — start directly with the first sentence
-
-[body]
-
-## Output Template
-Hi [recipient],
-
-[result]
-
-Best,
-[name]
+Include a greeting to the person they are emailing.
+End with Best, followed by the user's name.
+Output only the email — no preamble, no explanation.
