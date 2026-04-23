@@ -308,6 +308,8 @@ impl Skill {
     }
 }
 
+/// Load built-in skills from embedded `include_str!` sources.
+/// Used in tests and as a fallback when the resource dir is unavailable.
 pub fn builtin() -> Vec<Skill> {
     let mut out = Vec::new();
     for (_, md) in BUILTIN_SOURCES {
@@ -319,11 +321,48 @@ pub fn builtin() -> Vec<Skill> {
     out
 }
 
-pub fn load_all(user_dir: Option<&std::path::Path>) -> Vec<Skill> {
-    let mut by_name: std::collections::BTreeMap<String, Skill> = std::collections::BTreeMap::new();
-    for s in builtin() {
-        by_name.insert(s.name.clone(), s);
+/// Load built-in skills from a directory on disk (the app resource bundle).
+/// Falls back to the embedded `include_str!` version for any file that is
+/// missing or unparseable, so dev/test always work.
+pub fn builtin_from_dir(dir: &std::path::Path) -> Vec<Skill> {
+    let mut out = Vec::new();
+    for (name, fallback_md) in BUILTIN_SOURCES {
+        let path = dir.join(format!("{name}.md"));
+        let md = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(_) => {
+                log::warn!(
+                    "built-in skill not found at {:?}, using embedded fallback",
+                    path
+                );
+                fallback_md.to_string()
+            }
+        };
+        match Skill::from_markdown(&md) {
+            Ok(s) => out.push(s),
+            Err(e) => log::error!("built-in skill {:?} parse failed: {e:?}", path),
+        }
     }
+    out
+}
+
+/// Load all skills. `builtin_dir` is the resource-bundle skills folder
+/// (read from disk at runtime so no recompile is needed after edits).
+/// `user_dir` is the user's override/custom skills folder.
+pub fn load_all(
+    builtin_dir: Option<&std::path::Path>,
+    user_dir: Option<&std::path::Path>,
+) -> Vec<Skill> {
+    let mut by_name: std::collections::BTreeMap<String, Skill> = std::collections::BTreeMap::new();
+
+    let builtins = match builtin_dir {
+        Some(dir) if dir.exists() => builtin_from_dir(dir),
+        _ => builtin(),
+    };
+    for s in &builtins {
+        by_name.insert(s.name.clone(), s.clone());
+    }
+
     if let Some(dir) = user_dir {
         if dir.exists() {
             match std::fs::read_dir(dir) {
@@ -355,7 +394,9 @@ pub fn load_all(user_dir: Option<&std::path::Path>) -> Vec<Skill> {
             }
         }
     }
-    let builtin_names: Vec<String> = builtin().into_iter().map(|s| s.name).collect();
+
+    // Emit built-ins first (stable order), then user-only skills alphabetically.
+    let builtin_names: Vec<String> = builtins.into_iter().map(|s| s.name).collect();
     let mut out: Vec<Skill> = Vec::with_capacity(by_name.len());
     for n in &builtin_names {
         if let Some(s) = by_name.remove(n) {

@@ -188,7 +188,17 @@ impl AppState {
         let model = WhisperModel::from_id(&preferred).unwrap_or(WhisperModel::DEFAULT);
 
         let user_skills_dir = data_dir.join("skills");
-        let skills_list = skills::load_all(Some(&user_skills_dir));
+        // Built-in skills are bundled as resources and read from disk at
+        // runtime — no recompile needed after editing skill files.
+        let resource_skills_dir = app
+            .path()
+            .resource_dir()
+            .ok()
+            .map(|d| d.join("skills"));
+        let skills_list = skills::load_all(
+            resource_skills_dir.as_deref(),
+            Some(&user_skills_dir),
+        );
         log::info!(
             "loaded {} skills: {}",
             skills_list.len(),
@@ -230,8 +240,9 @@ impl AppState {
     }
 
     pub fn reload_skills(&self) {
+        let resource_dir = self.app.path().resource_dir().ok().map(|d| d.join("skills"));
         let dir = self.user_skills_dir().ok();
-        let new = skills::load_all(dir.as_deref());
+        let new = skills::load_all(resource_dir.as_deref(), dir.as_deref());
         log::info!(
             "reloaded {} skills: {}",
             new.len(),
