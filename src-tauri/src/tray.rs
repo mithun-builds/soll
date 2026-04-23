@@ -1,5 +1,7 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use once_cell::sync::{Lazy, OnceCell};
+use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,14 +16,10 @@ use crate::model::WhisperModel;
 use crate::state::AppState;
 
 const TRAY_ID: &str = "svara-tray";
-/// Every "working" state (Loading / Initializing / Processing) uses the same
-/// blue blink cadence. The user only needs to distinguish "wait" from "speak".
 const WORKING_BLINK_MS: u64 = 500;
 const TRANSCRIBING_BLINK_MS: u64 = 400;
 const DONE_REVERT_MS: u64 = 900;
 
-// Four-color palette: blue (working), yellow (idle), red (speak), green (done).
-// Gray/orange icons removed from the state machine — unused now.
 static IMG_BLUE: Lazy<Image<'static>> =
     Lazy::new(|| Image::from_bytes(include_bytes!("../icons/tray_blue.png")).unwrap());
 static IMG_BLUE_DIM: Lazy<Image<'static>> =
@@ -37,35 +35,26 @@ static IMG_GREEN: Lazy<Image<'static>> =
 
 static EPOCH: AtomicU64 = AtomicU64::new(0);
 
-/// Reference to the first (non-interactive) menu item, which we rewrite
-/// every state change so users reading the menu see the live status.
+/// Status line in the tray menu, rewritten on every state change.
 static STATUS_ITEM: OnceCell<MenuItem<Wry>> = OnceCell::new();
 
-/// Checkmarked items for the model submenu; we toggle their checked state
-/// whenever `update_model_check(...)` is called.
-static MODEL_ITEMS: OnceCell<Vec<(WhisperModel, CheckMenuItem<Wry>)>> = OnceCell::new();
+/// Live handles to the downloadable model items so we can update their
+/// label ("Downloading 37%…") without rebuilding the whole menu.
+static DOWNLOAD_ITEMS: Lazy<Mutex<HashMap<WhisperModel, MenuItem<Wry>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
-fn menu_id_for_model(m: WhisperModel) -> String {
-    format!("model.{}", m.id())
-}
-
-fn model_from_menu_id(id: &str) -> Option<WhisperModel> {
-    id.strip_prefix("model.").and_then(WhisperModel::from_id)
-}
+/// CheckMenuItems for cached models — used to keep the active model's
+/// checkmark in sync with `current_model`.
+static CACHED_ITEMS: Lazy<Mutex<HashMap<WhisperModel, CheckMenuItem<Wry>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Copy, Clone, Debug)]
 pub enum TrayState {
-    /// App is still booting (downloading/loading model, compiling Metal kernels).
     Loading,
-    /// Ready for the next dictation. The resting state.
     Idle,
-    /// Hotkey pressed; mic is warming up. User should wait for next state.
     Initializing,
-    /// Mic is live and capturing. User should be speaking now.
     Transcribing,
-    /// Hotkey released; running whisper + optional AI cleanup.
     Processing,
-    /// Text just pasted. Brief green flash then reverts to Idle.
     Transcribed,
 }
 
@@ -93,47 +82,12 @@ impl TrayState {
     }
 }
 
+// ── public tray API ────────────────────────────────────────────────────────
+
 pub fn build_tray(app: &AppHandle) -> Result<()> {
-    let status_item = MenuItem::with_id(
-        app,
-        "status",
-        TrayState::Loading.status_text(),
-        false,
-        None::<&str>,
-    )?;
-    let _ = STATUS_ITEM.set(status_item.clone());
-    let initial_icon = IMG_BLUE.clone();
-
-    let model_submenu = build_model_submenu(app)?;
-
-    let hotkey_item = MenuItem::with_id(
-        app,
-        "hotkey_info",
-        "Hold ⌃⇧Space to dictate",
-        false,
-        None::<&str>,
-    )?;
-    let dictionary = MenuItem::with_id(app, "dictionary", "Dictionary…", true, None::<&str>)?;
-    let legend = MenuItem::with_id(app, "legend", "Status Legend…", true, None::<&str>)?;
-    let sep = PredefinedMenuItem::separator(app)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit Svara", true, Some("Cmd+Q"))?;
-
-    let menu = Menu::with_items(
-        app,
-        &[
-            &status_item,
-            &hotkey_item,
-            &sep,
-            &dictionary,
-            &legend,
-            &model_submenu,
-            &sep,
-            &quit,
-        ],
-    )?;
-
+    let menu = build_menu(app)?;
     TrayIconBuilder::with_id(TRAY_ID)
-        .icon(initial_icon)
+        .icon(IMG_BLUE.clone())
         .icon_as_template(false)
         .tooltip(TrayState::Loading.tooltip())
         .menu(&menu)
@@ -145,8 +99,10 @@ pub fn build_tray(app: &AppHandle) -> Result<()> {
                 "dictionary" => open_dictionary_window(app),
                 "legend" => open_legend_window(app),
                 other => {
-                    if let Some(model) = model_from_menu_id(other) {
-                        handle_model_pick(app, model);
+                    if let Some(model) = parse_model_id(other, "model.") {
+                        handle_active_model_click(app, model);
+                    } else if let Some(model) = parse_model_id(other, "download.") {
+                        handle_download_click(app, model);
                     }
                 }
             }
@@ -157,120 +113,13 @@ pub fn build_tray(app: &AppHandle) -> Result<()> {
     Ok(())
 }
 
-pub fn open_dictionary_window(app: &AppHandle) {
-    const LABEL: &str = "dictionary";
-    if let Some(existing) = app.get_webview_window(LABEL) {
-        let _ = existing.show();
-        let _ = existing.set_focus();
-        return;
-    }
-    let url = WebviewUrl::App("index.html?view=dictionary".into());
-    match WebviewWindowBuilder::new(app, LABEL, url)
-        .title("Svara — Dictionary")
-        .inner_size(520.0, 680.0)
-        .min_inner_size(420.0, 480.0)
-        .resizable(true)
-        .build()
-    {
-        Ok(_) => log::info!("opened dictionary window"),
-        Err(e) => log::error!("open dictionary window: {e:?}"),
-    }
-}
-
-/// Build the "Whisper model" submenu with a CheckMenuItem per model.
-/// The currently-active model is marked checked on every state change.
-fn build_model_submenu(app: &AppHandle) -> Result<Submenu<Wry>> {
-    let state = app.try_state::<Arc<AppState>>();
-    let current = state
-        .map(|s| s.inner().current_model())
-        .unwrap_or(WhisperModel::DEFAULT);
-
-    let mut pairs: Vec<(WhisperModel, CheckMenuItem<Wry>)> = Vec::new();
-    let mut builder = SubmenuBuilder::new(app, "Whisper model");
-    for &m in WhisperModel::ALL {
-        let item = CheckMenuItem::with_id(
-            app,
-            menu_id_for_model(m),
-            m.display_name(),
-            true,
-            m == current,
-            None::<&str>,
-        )?;
-        builder = builder.item(&item);
-        pairs.push((m, item));
-    }
-    let submenu = builder.build()?;
-    let _ = MODEL_ITEMS.set(pairs);
-    Ok(submenu)
-}
-
-/// Update the submenu's checkmarks to reflect `current`.
-pub fn update_model_check(current: WhisperModel) {
-    if let Some(pairs) = MODEL_ITEMS.get() {
-        for (m, item) in pairs {
-            let _ = item.set_checked(*m == current);
-        }
-    }
-}
-
-fn handle_model_pick(app: &AppHandle, model: WhisperModel) {
-    let state = match app.try_state::<Arc<AppState>>() {
-        Some(s) => s.inner().clone(),
-        None => return,
-    };
-    // macOS auto-toggles a CheckMenuItem on click, so without this the user
-    // can see multiple items checked during an in-flight switch. Force the
-    // radio invariant: exactly one item checked — the one just clicked.
-    update_model_check(model);
-
-    // No-op if the picked model is already active (re-check only, no reload).
-    if state.current_model() == model {
-        return;
-    }
-    log::info!("tray: user picked {}", model.id());
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) = state.clone().switch_model(model).await {
-            log::error!("switch_model({}) failed: {e:?}", model.id());
-            // Revert the checkmark to the actual current model so the UI
-            // doesn't lie about what's loaded.
-            update_model_check(state.current_model());
-        }
-        // On success the initial update_model_check call is already correct.
-    });
-}
-
-pub fn open_legend_window(app: &AppHandle) {
-    const LABEL: &str = "legend";
-    if let Some(existing) = app.get_webview_window(LABEL) {
-        let _ = existing.show();
-        let _ = existing.set_focus();
-        return;
-    }
-    let url = WebviewUrl::App("index.html?view=legend".into());
-    match WebviewWindowBuilder::new(app, LABEL, url)
-        .title("Svara — Status Legend")
-        .inner_size(520.0, 760.0)
-        .min_inner_size(460.0, 520.0)
-        .resizable(true)
-        .build()
-    {
-        Ok(_) => log::info!("opened legend window"),
-        Err(e) => log::error!("open legend window: {e:?}"),
-    }
-}
-
 pub fn set_state(app: &AppHandle, state: TrayState) {
     let my_epoch = EPOCH.fetch_add(1, Ordering::SeqCst) + 1;
 
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_tooltip(Some(state.tooltip()));
-        // Clear the menu-bar title whenever state changes. Specific
-        // sub-states (notably model download) will rewrite it.
-        let _ = tray.set_title(None::<String>);
     }
-    if let Some(item) = STATUS_ITEM.get() {
-        let _ = item.set_text(state.status_text());
-    }
+    set_status_text(state.status_text());
 
     match state {
         TrayState::Idle => set_icon(app, IMG_YELLOW.clone()),
@@ -288,9 +137,6 @@ pub fn set_state(app: &AppHandle, state: TrayState) {
                 TRANSCRIBING_BLINK_MS,
             );
         }
-        // All three "working" variants share the same blue blink so the
-        // user sees a single consistent "wait" signal. The text in the
-        // tray menu still distinguishes them for anyone who wants detail.
         TrayState::Loading | TrayState::Initializing | TrayState::Processing => {
             set_icon(app, IMG_BLUE.clone());
             start_blink(
@@ -304,27 +150,258 @@ pub fn set_state(app: &AppHandle, state: TrayState) {
     }
 }
 
-fn set_icon(app: &AppHandle, image: Image<'static>) {
-    if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        let _ = tray.set_icon(Some(image));
-    }
-}
-
-/// Text displayed next to the tray dot in the menu bar (macOS). Keep it
-/// very short — users see it at a glance alongside the wifi/battery
-/// icons. Pass `None` to clear.
-pub fn set_title(app: &AppHandle, text: Option<&str>) {
-    if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        let _ = tray.set_title(text);
-    }
-}
-
-/// Update the first (status) menu item in-place. Useful for transient
-/// overrides (download %, etc.). The next `set_state` call resets it
-/// to that state's canonical status_text.
+/// Rewrite the first (non-interactive) menu item that shows the live state.
 pub fn set_status_text(text: &str) {
     if let Some(item) = STATUS_ITEM.get() {
         let _ = item.set_text(text);
+    }
+}
+
+/// Live-update the "Download…" menu item for a specific model during a
+/// running download. Call with (done, total) in bytes; if total is 0 we
+/// just show an indeterminate marker.
+pub fn set_download_progress(model: WhisperModel, done: u64, total: u64) {
+    let items = DOWNLOAD_ITEMS.lock();
+    if let Some(item) = items.get(&model) {
+        let label = if total == 0 {
+            format!("{} — Downloading… ({})", model.short_name(), model.size_label())
+        } else {
+            let pct = done * 100 / total;
+            format!(
+                "{} — Downloading {}% ({})",
+                model.short_name(),
+                pct,
+                model.size_label()
+            )
+        };
+        let _ = item.set_text(&label);
+    }
+}
+
+/// Rebuild the entire tray menu — used after a download finishes so the
+/// completed model moves from the Download section into the main list.
+pub fn refresh_menu(app: &AppHandle) {
+    match build_menu(app) {
+        Ok(menu) => {
+            if let Some(tray) = app.tray_by_id(TRAY_ID) {
+                let _ = tray.set_menu(Some(menu));
+            }
+        }
+        Err(e) => log::error!("refresh_menu: {e:?}"),
+    }
+}
+
+/// Toggle which cached model carries the checkmark. Call after every swap.
+pub fn update_model_check(current: WhisperModel) {
+    let items = CACHED_ITEMS.lock();
+    for (m, item) in items.iter() {
+        let _ = item.set_checked(*m == current);
+    }
+}
+
+pub fn open_dictionary_window(app: &AppHandle) {
+    open_window(app, "dictionary", "Svara — Dictionary", 520.0, 680.0);
+}
+
+pub fn open_legend_window(app: &AppHandle) {
+    open_window(app, "legend", "Svara — Status Legend", 460.0, 560.0);
+}
+
+// ── menu construction ──────────────────────────────────────────────────────
+
+fn build_menu(app: &AppHandle) -> Result<Menu<Wry>> {
+    let status_item = MenuItem::with_id(
+        app,
+        "status",
+        TrayState::Loading.status_text(),
+        false,
+        None::<&str>,
+    )?;
+    let _ = STATUS_ITEM.set(status_item.clone());
+
+    let hotkey_item = MenuItem::with_id(
+        app,
+        "hotkey_info",
+        "Hold ⌃⇧Space to dictate",
+        false,
+        None::<&str>,
+    )?;
+    let dictionary = MenuItem::with_id(app, "dictionary", "Dictionary…", true, None::<&str>)?;
+    let legend = MenuItem::with_id(app, "legend", "Status Legend…", true, None::<&str>)?;
+    let model_submenu = build_model_submenu(app)?;
+    let sep = PredefinedMenuItem::separator(app)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit Svara", true, Some("Cmd+Q"))?;
+
+    Menu::with_items(
+        app,
+        &[
+            &status_item,
+            &hotkey_item,
+            &sep,
+            &dictionary,
+            &legend,
+            &model_submenu,
+            &sep,
+            &quit,
+        ],
+    )
+    .map_err(Into::into)
+}
+
+fn build_model_submenu(app: &AppHandle) -> Result<Submenu<Wry>> {
+    let state = app
+        .try_state::<Arc<AppState>>()
+        .ok_or_else(|| anyhow!("AppState not managed yet"))?;
+    let state = state.inner();
+    let current = state.current_model();
+    let downloading = *state.downloading.lock();
+
+    let mut cached_map: HashMap<WhisperModel, CheckMenuItem<Wry>> = HashMap::new();
+    let mut download_map: HashMap<WhisperModel, MenuItem<Wry>> = HashMap::new();
+    let mut builder = SubmenuBuilder::new(app, "Whisper model");
+
+    // Section 1: cached/available models. Only these are selectable as the
+    // active model. Radio checkmark on the currently-loaded one.
+    let mut has_cached = false;
+    for &m in WhisperModel::ALL {
+        if state.is_model_cached(m) {
+            has_cached = true;
+            let label = format!("{} ({})", m.short_name(), m.size_label());
+            let item = CheckMenuItem::with_id(
+                app,
+                format!("model.{}", m.id()),
+                &label,
+                true,
+                m == current,
+                None::<&str>,
+            )?;
+            builder = builder.item(&item);
+            cached_map.insert(m, item);
+        }
+    }
+
+    // Section 2: models available for download. Clickable entries that
+    // trigger a confirmation dialog before starting the fetch.
+    let uncached: Vec<WhisperModel> = WhisperModel::ALL
+        .iter()
+        .copied()
+        .filter(|m| !state.is_model_cached(*m))
+        .collect();
+    if !uncached.is_empty() {
+        if has_cached {
+            let sep = PredefinedMenuItem::separator(app)?;
+            builder = builder.item(&sep);
+        }
+        for m in uncached {
+            let label = if downloading == Some(m) {
+                format!("{} — Downloading… ({})", m.short_name(), m.size_label())
+            } else {
+                format!("{} — Download ({})", m.short_name(), m.size_label())
+            };
+            let item = MenuItem::with_id(
+                app,
+                format!("download.{}", m.id()),
+                &label,
+                true,
+                None::<&str>,
+            )?;
+            builder = builder.item(&item);
+            download_map.insert(m, item);
+        }
+    }
+
+    let submenu = builder.build()?;
+    *CACHED_ITEMS.lock() = cached_map;
+    *DOWNLOAD_ITEMS.lock() = download_map;
+    Ok(submenu)
+}
+
+// ── click handlers ─────────────────────────────────────────────────────────
+
+fn parse_model_id(raw: &str, prefix: &str) -> Option<WhisperModel> {
+    raw.strip_prefix(prefix).and_then(WhisperModel::from_id)
+}
+
+fn handle_active_model_click(app: &AppHandle, model: WhisperModel) {
+    let state = match app.try_state::<Arc<AppState>>() {
+        Some(s) => s.inner().clone(),
+        None => return,
+    };
+    // Radio invariant — ensure exactly one cached item stays checked.
+    update_model_check(model);
+
+    if state.current_model() == model {
+        return;
+    }
+    log::info!("tray: activate cached {}", model.id());
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = state.clone().switch_model(model).await {
+            log::error!("switch_model({}) failed: {e:?}", model.id());
+            update_model_check(state.current_model());
+        }
+    });
+}
+
+fn handle_download_click(app: &AppHandle, model: WhisperModel) {
+    let state = match app.try_state::<Arc<AppState>>() {
+        Some(s) => s.inner().clone(),
+        None => return,
+    };
+    // Already downloading this model — nothing to do.
+    if *state.downloading.lock() == Some(model) {
+        log::info!("tray: download.{} — already running", model.id());
+        return;
+    }
+    // Raced with completion: refresh menu so it moves to the cached
+    // section and the user can click to activate.
+    if state.is_model_cached(model) {
+        refresh_menu(app);
+        return;
+    }
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let confirmed = confirm_download_dialog(model).await;
+        if !confirmed {
+            log::info!("tray: download.{} cancelled by user", model.id());
+            return;
+        }
+        if let Err(e) = state.start_download(model).await {
+            log::error!("start_download({}): {e:?}", model.id());
+        }
+        // Refresh menu when download completes (success or failure) so
+        // the UI accurately reflects on-disk state.
+        refresh_menu(&app_clone);
+    });
+}
+
+async fn confirm_download_dialog(model: WhisperModel) -> bool {
+    let message = format!(
+        "Download the {} Whisper model?\\n\\nSize: {}. The download runs in the background — Svara keeps working on your current model while it fetches.",
+        model.display_name(),
+        model.size_label()
+    );
+    let script = format!(
+        "display dialog \"{}\" buttons {{\"Cancel\", \"Download\"}} default button \"Download\" with title \"Svara\"",
+        message.replace('\\', "\\\\").replace('"', "\\\"")
+    );
+    let output = tokio::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .await;
+    match output {
+        Ok(o) if o.status.success() => {
+            String::from_utf8_lossy(&o.stdout).contains("Download")
+        }
+        _ => false,
+    }
+}
+
+// ── internal tray helpers ──────────────────────────────────────────────────
+
+fn set_icon(app: &AppHandle, image: Image<'static>) {
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_icon(Some(image));
     }
 }
 
@@ -357,11 +434,28 @@ fn schedule_revert(app: AppHandle, epoch: u64) {
         }
         EPOCH.fetch_add(1, Ordering::SeqCst);
         set_icon(&app, IMG_YELLOW.clone());
-        if let Some(item) = STATUS_ITEM.get() {
-            let _ = item.set_text(TrayState::Idle.status_text());
-        }
+        set_status_text(TrayState::Idle.status_text());
         if let Some(tray) = app.tray_by_id(TRAY_ID) {
             let _ = tray.set_tooltip(Some(TrayState::Idle.tooltip()));
         }
     });
+}
+
+fn open_window(app: &AppHandle, label: &str, title: &str, w: f64, h: f64) {
+    if let Some(existing) = app.get_webview_window(label) {
+        let _ = existing.show();
+        let _ = existing.set_focus();
+        return;
+    }
+    let url = WebviewUrl::App(format!("index.html?view={label}").into());
+    match WebviewWindowBuilder::new(app, label, url)
+        .title(title)
+        .inner_size(w, h)
+        .min_inner_size(420.0, 480.0)
+        .resizable(true)
+        .build()
+    {
+        Ok(_) => log::info!("opened {label} window"),
+        Err(e) => log::error!("open {label} window: {e:?}"),
+    }
 }
