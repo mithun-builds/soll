@@ -100,6 +100,30 @@ impl AppState {
         *self.current_model.lock()
     }
 
+    /// Path to the user's skills override directory. Created on demand.
+    pub fn user_skills_dir(&self) -> Result<std::path::PathBuf> {
+        let d = self
+            .app
+            .path()
+            .app_data_dir()
+            .map_err(|e| anyhow!("app_data_dir: {e:?}"))?
+            .join("skills");
+        Ok(d)
+    }
+
+    /// Reload the skill registry (built-ins + whatever is on disk right now).
+    /// Called after any mutation — save/reset/delete/create.
+    pub fn reload_skills(&self) {
+        let dir = self.user_skills_dir().ok();
+        let new = skills::load_all(dir.as_deref());
+        log::info!(
+            "reloaded {} skills: {}",
+            new.len(),
+            new.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ")
+        );
+        *self.skills.lock() = new;
+    }
+
     /// Synchronous cache check — used by the tray handler to decide whether
     /// the swap can be foreground (cached, <1 s) or must be background
     /// (needs a download). `std::fs::metadata` is stat-level fast.

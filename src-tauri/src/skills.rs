@@ -32,6 +32,30 @@ pub struct Skill {
     pub system_prompt: String,
     pub output_template: String,
     pub source: SkillSource,
+    /// Raw markdown this skill was parsed from. Served to the editor UI
+    /// so users can see and modify the exact text.
+    pub markdown_source: String,
+}
+
+/// Built-in skill markdown, embedded at compile time. Keeping a named
+/// lookup lets us:
+///   - populate the "New skill" form with a starter template
+///   - reset an overridden built-in back to its factory version
+///   - show the default markdown if the user deletes their override
+pub const BUILTIN_SOURCES: &[(&str, &str)] = &[
+    ("email", include_str!("../skills/email.md")),
+    ("prompt-better", include_str!("../skills/prompt_better.md")),
+];
+
+pub fn builtin_source(name: &str) -> Option<&'static str> {
+    BUILTIN_SOURCES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, s)| *s)
+}
+
+pub fn builtin_names() -> impl Iterator<Item = &'static str> {
+    BUILTIN_SOURCES.iter().map(|(n, _)| *n)
 }
 
 #[derive(Debug, Clone)]
@@ -217,6 +241,7 @@ impl Skill {
             system_prompt,
             output_template,
             source: SkillSource::Builtin,
+            markdown_source: md.to_string(),
         })
     }
 
@@ -247,10 +272,7 @@ impl Skill {
 
 pub fn builtin() -> Vec<Skill> {
     let mut out = Vec::new();
-    for md in [
-        include_str!("../skills/email.md"),
-        include_str!("../skills/prompt_better.md"),
-    ] {
+    for (_, md) in BUILTIN_SOURCES {
         match Skill::from_markdown(md) {
             Ok(s) => out.push(s),
             Err(e) => log::error!("built-in skill parse failed: {e:?}"),
@@ -260,7 +282,12 @@ pub fn builtin() -> Vec<Skill> {
 }
 
 pub fn load_all(user_dir: Option<&std::path::Path>) -> Vec<Skill> {
-    let mut out = builtin();
+    // Index by name so user-provided files can OVERRIDE same-named built-ins.
+    // Preserve insertion order for built-ins so the UI list is stable.
+    let mut by_name: std::collections::BTreeMap<String, Skill> = std::collections::BTreeMap::new();
+    for s in builtin() {
+        by_name.insert(s.name.clone(), s);
+    }
     if let Some(dir) = user_dir {
         if dir.exists() {
             match std::fs::read_dir(dir) {
@@ -272,8 +299,12 @@ pub fn load_all(user_dir: Option<&std::path::Path>) -> Vec<Skill> {
                                 Ok(md) => match Skill::from_markdown(&md) {
                                     Ok(mut s) => {
                                         s.source = SkillSource::User;
-                                        log::info!("loaded user skill: {}", s.name);
-                                        out.push(s);
+                                        log::info!(
+                                            "loaded user skill: {} (from {})",
+                                            s.name,
+                                            path.display()
+                                        );
+                                        by_name.insert(s.name.clone(), s);
                                     }
                                     Err(e) => {
                                         log::error!("user skill {:?}: {e:?}", path.display())
@@ -287,6 +318,20 @@ pub fn load_all(user_dir: Option<&std::path::Path>) -> Vec<Skill> {
                 Err(e) => log::error!("read_dir({:?}): {e:?}", dir.display()),
             }
         }
+    }
+    // Emit built-ins first (stable order), then user-only skills alphabetically.
+    let builtin_names: Vec<String> = builtin()
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
+    let mut out: Vec<Skill> = Vec::with_capacity(by_name.len());
+    for n in &builtin_names {
+        if let Some(s) = by_name.remove(n) {
+            out.push(s);
+        }
+    }
+    for (_, s) in by_name {
+        out.push(s);
     }
     out
 }

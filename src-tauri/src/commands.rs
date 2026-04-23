@@ -109,6 +109,9 @@ pub struct SkillInfo {
     pub triggers: Vec<String>,
     pub source: String, // "builtin" | "user"
     pub native: Option<String>,
+    /// True if a factory/built-in version ships with the app under this
+    /// name. Used by the UI to show "Reset to default" instead of "Delete".
+    pub has_builtin_default: bool,
 }
 
 #[tauri::command]
@@ -123,8 +126,93 @@ pub fn skill_list(state: State<'_, Arc<AppState>>) -> Vec<SkillInfo> {
             triggers: s.trigger_templates(),
             source: s.source.as_str().to_string(),
             native: s.native.clone(),
+            has_builtin_default: crate::skills::builtin_source(&s.name).is_some(),
         })
         .collect()
+}
+
+#[tauri::command]
+pub fn skill_get_source(name: String, state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    let skills = state.skills.lock();
+    skills
+        .iter()
+        .find(|s| s.name == name)
+        .map(|s| s.markdown_source.clone())
+        .ok_or_else(|| format!("skill `{name}` not found"))
+}
+
+/// Return the factory/default markdown for a built-in skill, regardless
+/// of whether the user has an override. Used for the "Reset" preview.
+#[tauri::command]
+pub fn skill_get_default_source(name: String) -> Option<String> {
+    crate::skills::builtin_source(&name).map(|s| s.to_string())
+}
+
+/// Create a brand-new skill from arbitrary markdown. Returns the parsed
+/// name on success. Fails if a skill with that name already exists.
+#[tauri::command]
+pub fn skill_create(
+    markdown: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    let parsed = crate::skills::Skill::from_markdown(&markdown).map_err(|e| e.to_string())?;
+    let name = parsed.name.clone();
+    let dir = state.user_skills_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("{}.md", name));
+    if path.exists() {
+        return Err(format!("skill `{name}` already exists"));
+    }
+    // Forbid colliding with a built-in via "new" — user should click Edit
+    // on the built-in to override it instead.
+    if crate::skills::builtin_source(&name).is_some() {
+        return Err(format!(
+            "`{name}` is a built-in skill; edit it from its row instead of creating"
+        ));
+    }
+    std::fs::write(&path, &markdown).map_err(|e| e.to_string())?;
+    state.reload_skills();
+    Ok(name)
+}
+
+/// Save edits to an existing skill. If it's a built-in, this creates a
+/// user override; next reload will prefer the user file. Parses the
+/// markdown first; the name in the markdown must match the target.
+#[tauri::command]
+pub fn skill_save(
+    name: String,
+    markdown: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let parsed = crate::skills::Skill::from_markdown(&markdown).map_err(|e| e.to_string())?;
+    if parsed.name != name {
+        return Err(format!(
+            "name changed: file is `{name}` but markdown declares `{}`",
+            parsed.name
+        ));
+    }
+    let dir = state.user_skills_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("{}.md", name));
+    std::fs::write(&path, &markdown).map_err(|e| e.to_string())?;
+    state.reload_skills();
+    Ok(())
+}
+
+/// Remove a user override for a built-in (reverts to factory) or delete
+/// a purely user-created skill entirely.
+#[tauri::command]
+pub fn skill_reset(
+    name: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let dir = state.user_skills_dir().map_err(|e| e.to_string())?;
+    let path = dir.join(format!("{}.md", name));
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    state.reload_skills();
+    Ok(())
 }
 
 // ── models ─────────────────────────────────────────────────────────────────
