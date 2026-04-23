@@ -117,6 +117,10 @@ impl AppState {
             me.report_download_progress(model, done, total);
         })
         .await?;
+        // Download finished (or cache hit) — clear the menu-bar title and
+        // swap the status line over to "Loading whisper…".
+        tray::set_title(&self.app, None);
+        tray::set_status_text(&format!("Loading {}…", model.id()));
         info!(
             "{} on disk in {:?} — loading into whisper…",
             model.id(),
@@ -148,13 +152,28 @@ impl AppState {
         if total == 0 {
             return;
         }
-        // Throttle: only log every 5%.
-        static LAST_PCT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+        // Throttle updates to every 1% so the menu-bar title doesn't flicker
+        // on every chunk. Log every 5%.
+        static LAST_TITLE_PCT: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(u64::MAX);
+        static LAST_LOG_BUCKET: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(u64::MAX);
         let pct = done * 100 / total;
-        let bucket = pct / 5;
-        let prev = LAST_PCT.load(std::sync::atomic::Ordering::Relaxed);
-        if bucket != prev {
-            LAST_PCT.store(bucket, std::sync::atomic::Ordering::Relaxed);
+
+        let prev_title = LAST_TITLE_PCT.load(std::sync::atomic::Ordering::Relaxed);
+        if pct != prev_title {
+            LAST_TITLE_PCT.store(pct, std::sync::atomic::Ordering::Relaxed);
+            tray::set_title(&self.app, Some(&format!(" ↓ {pct}%")));
+            tray::set_status_text(&format!(
+                "Downloading {}… {pct}% ({} / {} MB)",
+                model.id(),
+                done / (1024 * 1024),
+                total / (1024 * 1024)
+            ));
+        }
+        let log_bucket = pct / 5;
+        if log_bucket != LAST_LOG_BUCKET.load(std::sync::atomic::Ordering::Relaxed) {
+            LAST_LOG_BUCKET.store(log_bucket, std::sync::atomic::Ordering::Relaxed);
             info!(
                 "download {}: {pct}% ({} / {} MB)",
                 model.id(),
