@@ -244,8 +244,8 @@ pub fn open_legend_window(app: &AppHandle) {
     let url = WebviewUrl::App("index.html?view=legend".into());
     match WebviewWindowBuilder::new(app, LABEL, url)
         .title("Svara — Status Legend")
-        .inner_size(460.0, 560.0)
-        .min_inner_size(420.0, 480.0)
+        .inner_size(520.0, 760.0)
+        .min_inner_size(460.0, 520.0)
         .resizable(true)
         .build()
     {
@@ -259,6 +259,9 @@ pub fn set_state(app: &AppHandle, state: TrayState) {
 
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_tooltip(Some(state.tooltip()));
+        // Clear the menu-bar title whenever state changes. Specific
+        // sub-states (notably model download) will rewrite it.
+        let _ = tray.set_title(None::<String>);
     }
     if let Some(item) = STATUS_ITEM.get() {
         let _ = item.set_text(state.status_text());
@@ -299,6 +302,24 @@ pub fn set_state(app: &AppHandle, state: TrayState) {
 fn set_icon(app: &AppHandle, image: Image<'static>) {
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_icon(Some(image));
+    }
+}
+
+/// Text displayed next to the tray dot in the menu bar (macOS). Keep it
+/// very short — users see it at a glance alongside the wifi/battery
+/// icons. Pass `None` to clear.
+pub fn set_title(app: &AppHandle, text: Option<&str>) {
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_title(text);
+    }
+}
+
+/// Update the first (status) menu item in-place. Useful for transient
+/// overrides (download %, etc.). The next `set_state` call resets it
+/// to that state's canonical status_text.
+pub fn set_status_text(text: &str) {
+    if let Some(item) = STATUS_ITEM.get() {
+        let _ = item.set_text(text);
     }
 }
 
