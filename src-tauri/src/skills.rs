@@ -718,11 +718,15 @@ Handle [topic]: [body]
     }
 
     #[test]
-    fn builtin_email_has_intent_and_instructions() {
+    fn builtin_email_uses_structured_template() {
         let skills = builtin();
         let email = skills.iter().find(|s| s.name == "email").unwrap();
-        assert!(email.intent.is_some(), "email skill should have ## Intent");
-        assert!(email.instructions.is_some(), "email skill should have ## Instructions");
+        assert!(email.intent.is_some(), "email should have ## Intent");
+        // Email uses legacy structured path — greeting/sign-off assembled
+        // deterministically so the LLM can't hallucinate the structure.
+        assert!(email.output_template.contains("[recipient]"));
+        assert!(email.output_template.contains("[result]"));
+        assert!(email.output_template.contains("[name]"));
     }
 
     #[test]
@@ -731,25 +735,5 @@ Handle [topic]: [body]
         let pb = skills.iter().find(|s| s.name == "prompt-better").unwrap();
         assert!(pb.intent.is_some(), "prompt-better should have ## Intent");
         assert!(pb.instructions.is_some(), "prompt-better should have ## Instructions");
-    }
-
-    #[test]
-    fn builtin_email_has_instructions() {
-        let skills = builtin();
-        let email = skills.iter().find(|s| s.name == "email").unwrap();
-        assert!(
-            email.instructions.is_some(),
-            "email skill should use ## Instructions"
-        );
-        // New-style skills don't need a system prompt or output template
-        let instr = email.instructions.as_ref().unwrap();
-        assert!(instr.contains("Best"), "sign-off should be described in instructions");
-    }
-
-    #[test]
-    fn builtin_prompt_better_has_instructions() {
-        let skills = builtin();
-        let pb = skills.iter().find(|s| s.name == "prompt-better").unwrap();
-        assert!(pb.instructions.is_some());
     }
 }
