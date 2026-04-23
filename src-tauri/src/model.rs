@@ -88,14 +88,27 @@ impl WhisperModel {
     }
 }
 
+/// The exact message attached to the cancellation error. Callers match on
+/// this string to decide whether the error was a supersession or a real
+/// failure (thiserror would be cleaner but adds a dep for one variant).
+pub const CANCELLED_MSG: &str = "download cancelled (superseded by newer pick)";
+
 /// Ensure `model` is available on disk, downloading if necessary. Returns
 /// the absolute path. Invokes `on_progress(done_bytes, total_bytes)` during
 /// the download so callers can surface progress (total may be 0 if the
 /// server doesn't send Content-Length).
+///
+/// `still_wanted` is polled between download chunks. When it returns false
+/// (e.g. the user picked a different model), the current download is
+/// aborted, the partial `.part` file is removed, and `Err(CANCELLED_MSG)`
+/// is returned so the caller can treat it as a no-op rather than a failure.
+/// For call sites that never need cancellation (warm-up on boot), pass
+/// `|| true`.
 pub async fn ensure_model(
     app: &AppHandle,
     model: WhisperModel,
     mut on_progress: impl FnMut(u64, u64) + Send,
+    still_wanted: impl Fn() -> bool + Send,
 ) -> Result<PathBuf> {
     let dir = model_dir(app)?;
     tokio::fs::create_dir_all(&dir).await.ok();
@@ -133,6 +146,14 @@ pub async fn ensure_model(
     let mut done: u64 = 0;
     use tokio::io::AsyncWriteExt;
     while let Some(chunk) = stream.next().await {
+        // Check between chunks — keeps cancellation latency ≤ one chunk
+        // (typically <64 KB, well under 100 ms on a hot connection).
+        if !still_wanted() {
+            drop(file);
+            let _ = tokio::fs::remove_file(&tmp).await;
+            info!("cancelled {} at {} / {} bytes", model.id(), done, total);
+            return Err(anyhow!(CANCELLED_MSG));
+        }
         let chunk = chunk.context("download chunk")?;
         file.write_all(&chunk).await.context("write chunk")?;
         done += chunk.len() as u64;

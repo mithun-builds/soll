@@ -12,7 +12,7 @@ use crate::audio::AudioRecorder;
 use crate::cleanup::OllamaClient;
 use crate::dictionary::Dictionary;
 use crate::formatter::{self, Format};
-use crate::model::{ensure_model, WhisperModel};
+use crate::model::{ensure_model, WhisperModel, CANCELLED_MSG};
 use crate::paste::paste_text;
 use crate::settings::{Settings, KEY_WHISPER_MODEL};
 use crate::transcribe::Transcriber;
@@ -26,6 +26,10 @@ pub struct AppState {
     pub settings: Arc<Settings>,
     /// Currently-loaded whisper model, kept in sync with the Transcriber.
     current_model: Mutex<WhisperModel>,
+    /// Bumped on every `switch_model` call. In-flight downloads poll this
+    /// between chunks and abort if it diverges from their captured value,
+    /// so picking a new model mid-download instantly cancels the old one.
+    switch_epoch: std::sync::atomic::AtomicU64,
     recorder: Mutex<Option<AudioRecorder>>,
     transcriber: AsyncMutex<Option<Arc<Transcriber>>>,
     /// Held exclusively during model swaps so dictations don't start on a
@@ -58,6 +62,7 @@ impl AppState {
             dictionary: dict,
             settings,
             current_model: Mutex::new(model),
+            switch_epoch: std::sync::atomic::AtomicU64::new(0),
             recorder: Mutex::new(None),
             transcriber: AsyncMutex::new(None),
             swap_guard: AsyncMutex::new(()),
@@ -86,40 +91,76 @@ impl AppState {
             me.ollama.warm_up().await;
         });
 
-        self.load_model(model).await
+        use std::sync::atomic::Ordering;
+        let my_epoch = self.switch_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+        self.load_model(model, my_epoch).await
     }
 
     /// Switch to a different model. Downloads if not cached; loads + warms;
-    /// swaps atomically. Blocks on `swap_guard` so concurrent dictations
-    /// can't observe a half-loaded state.
+    /// swaps atomically. Bumps `switch_epoch` so any in-flight download
+    /// aborts on its next chunk. Blocks on `swap_guard` so concurrent
+    /// dictations can't observe a half-loaded state.
     pub async fn switch_model(self: Arc<Self>, model: WhisperModel) -> Result<()> {
+        use std::sync::atomic::Ordering;
+        let my_epoch = self.switch_epoch.fetch_add(1, Ordering::SeqCst) + 1;
         if model == self.current_model() && self.transcriber.lock().await.is_some() {
             info!("switch_model: {} already active", model.id());
             return Ok(());
         }
-        info!("switch_model -> {}", model.id());
-        self.load_model(model).await?;
+        info!("switch_model -> {} (epoch={my_epoch})", model.id());
+        self.load_model(model, my_epoch).await?;
         self.settings
             .set(KEY_WHISPER_MODEL, model.id())
             .context("persist whisper_model setting")?;
         Ok(())
     }
 
-    /// Core load routine used by both warm_up and switch_model.
-    async fn load_model(self: &Arc<Self>, model: WhisperModel) -> Result<()> {
+    /// Core load routine used by both warm_up and switch_model. `epoch` is
+    /// the switch generation we were spawned for; if the global epoch
+    /// advances before we finish, we bail out early without touching the
+    /// live transcriber.
+    async fn load_model(self: &Arc<Self>, model: WhisperModel, epoch: u64) -> Result<()> {
+        use std::sync::atomic::Ordering;
+
         let _swap = self.swap_guard.lock().await;
+        // Another switch may have run while we waited on the lock — bail
+        // before we start any IO.
+        if self.switch_epoch.load(Ordering::SeqCst) != epoch {
+            info!("load_model({}) superseded before lock acquired", model.id());
+            return Ok(());
+        }
         let t0 = std::time::Instant::now();
         self.set_tray(TrayState::Loading);
 
-        let app = self.app.clone();
-        let me = self.clone();
-        let path = ensure_model(&self.app, model, move |done, total| {
-            me.report_download_progress(model, done, total);
-        })
-        .await?;
-        // Download finished (or cache hit) — clear the menu-bar title and
-        // swap the status line over to "Loading whisper…".
-        tray::set_title(&self.app, None);
+        let me_progress = self.clone();
+        let me_wanted = self.clone();
+        let path_result = ensure_model(
+            &self.app,
+            model,
+            move |done, total| me_progress.report_download_progress(model, done, total),
+            move || me_wanted.switch_epoch.load(Ordering::SeqCst) == epoch,
+        )
+        .await;
+        let path = match path_result {
+            Ok(p) => p,
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains(CANCELLED_MSG) {
+                    info!("load_model({}) cancelled mid-download", model.id());
+                    tray::set_title(&self.app, None);
+                    // Leave the tray in Loading — a newer load_model is
+                    // already queued behind us and will take over.
+                    return Ok(());
+                }
+                return Err(e);
+            }
+        };
+        // Download finished (or cache hit). The next phase (whisper file
+        // load + Metal kernel warm) takes 0.5–2 s depending on model size.
+        // Show a visible indicator in the menu bar so the user knows why
+        // the blue dot is still blinking — otherwise a cached swap feels
+        // like it hangs.
+        tray::set_title(&self.app, Some(&format!(" ⟳ {}", model.id())));
         tray::set_status_text(&format!("Loading {}…", model.id()));
         info!(
             "{} on disk in {:?} — loading into whisper…",
@@ -140,10 +181,16 @@ impl AppState {
         .await
         .map_err(|e| anyhow!("join error: {e}"))??;
 
+        // Final epoch check before swap — if the user clicked elsewhere
+        // while Metal was compiling, don't clobber with a stale model.
+        if self.switch_epoch.load(Ordering::SeqCst) != epoch {
+            info!("load_model({}) superseded after whisper load", model.id());
+            return Ok(());
+        }
+
         *self.transcriber.lock().await = Some(Arc::new(transcriber));
         *self.current_model.lock() = model;
         info!("{} fully ready in {:?}", model.id(), t0.elapsed());
-        let _ = app;
         self.set_tray(TrayState::Idle);
         Ok(())
     }
