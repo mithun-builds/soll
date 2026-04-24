@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import ollamaLogo from "../assets/ollama.png";
 import "./onboarding.css";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -21,6 +22,8 @@ type StepState = "done" | "in_progress" | "denied" | "pending";
 interface StepDef {
   id: string;
   icon: string;
+  /** Optional image URL — replaces the emoji icon when set. */
+  iconImg?: string;
   title: string;
   optional?: boolean;
   state: StepState;
@@ -167,6 +170,7 @@ function deriveSteps(s: OnboardingStatus): StepDef[] {
     {
       id: "ollama",
       icon: "🤖",
+      iconImg: ollamaLogo,
       title: "Ollama — AI cleanup",
       optional: true,
       state: ollamaState,
@@ -246,7 +250,10 @@ function WizardStep({
   return (
     <div className={`ob-slide ob-slide--enter-${animDir}`}>
       <div className="ob-slide-inner">
-        <div className="ob-step-icon">{step.icon}</div>
+        {step.iconImg
+          ? <img src={step.iconImg} className="ob-step-icon-img" alt={step.title} />
+          : <div className="ob-step-icon">{step.icon}</div>
+        }
 
         <div className="ob-step-meta">
           <span className="ob-step-num">Step {index + 1} of {total}</span>
