@@ -31,20 +31,6 @@ interface StepDef {
   extra?: React.ReactNode;
 }
 
-// ── Mock (simulate brand-new user) ────────────────────────────────────────
-
-const MOCK_STATUS: OnboardingStatus = {
-  model_cached: false,
-  model_downloading: false,
-  model_download_pct: null,
-  mic_permission: "unknown",
-  accessibility: false,
-  ollama_running: false,
-  has_dictated: false,
-  has_skills: false,
-  dismissed: false,
-};
-
 // ── Step icons (minimal white SVG line icons) ──────────────────────────────
 
 const ICONS: Record<string, React.ReactNode> = {
@@ -310,7 +296,6 @@ function WizardStep({
 
 export function OnboardingApp() {
   const [status, setStatus] = useState<OnboardingStatus | null>(null);
-  const [mock, setMock] = useState(false);
   const [currentStep, setCurrentStep] = useState(0);
   const [animDir, setAnimDir] = useState<"right" | "left">("right");
   const [animKey, setAnimKey] = useState(0);
@@ -358,8 +343,7 @@ export function OnboardingApp() {
     );
   }
 
-  const displayed = mock ? MOCK_STATUS : status;
-  const steps = deriveSteps(displayed);
+  const steps = deriveSteps(status);
   const totalSteps = steps.length;
   const doneCount = steps.filter((s) => s.state === "done").length;
   const requiredDone = steps.filter((s) => !s.optional && s.state === "done").length;
@@ -369,7 +353,7 @@ export function OnboardingApp() {
 
   const isFirst = currentStep === 0;
   const isLast = currentStep === totalSteps - 1;
-  const showDone = isLast && allRequiredDone && !mock;
+  const showDone = isLast && allRequiredDone;
 
   return (
     <div className="ob-shell">
@@ -424,13 +408,6 @@ export function OnboardingApp() {
 
         <div className="ob-nav-center">
           <StepDots steps={steps} current={currentStep} onDotClick={goTo} />
-          <button
-            type="button"
-            className="ob-simulate-btn"
-            onClick={() => setMock((m) => !m)}
-          >
-            {mock ? "← Live status" : "Preview as new user"}
-          </button>
         </div>
 
         {isLast ? (
