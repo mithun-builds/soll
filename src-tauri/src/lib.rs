@@ -135,14 +135,10 @@ pub fn run() {
                 }
             });
 
-            // Open the onboarding window on first launch (dismissed flag not set).
-            let show_onboarding = state
-                .settings
-                .get_or_default(settings::KEY_ONBOARDING_DISMISSED, "false")
-                != "true";
-            if show_onboarding {
-                tray::open_onboarding_window(app.handle());
-            }
+            // Always open the onboarding window on startup so it can be reviewed.
+            // TODO: restore first-launch-only guard before shipping:
+            //   only open when KEY_ONBOARDING_DISMISSED != "true"
+            tray::open_onboarding_window(app.handle());
 
             Ok(())
         })

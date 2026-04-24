@@ -7,7 +7,6 @@ import "./onboarding.css";
 interface OnboardingStatus {
   model_cached: boolean;
   model_downloading: boolean;
-  /** 0–100 while downloading, null otherwise */
   model_download_pct: number | null;
   mic_permission: "granted" | "denied" | "unknown";
   accessibility: boolean;
@@ -31,9 +30,22 @@ interface StepDef {
   extra?: React.ReactNode;
 }
 
+// ── Mock status (simulate a brand-new user) ────────────────────────────────
+
+const MOCK_STATUS: OnboardingStatus = {
+  model_cached: false,
+  model_downloading: false,
+  model_download_pct: null,
+  mic_permission: "unknown",
+  accessibility: false,
+  ollama_running: false,
+  has_dictated: false,
+  has_skills: false,
+  dismissed: false,
+};
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-/** Convert underscore state names to CSS modifier strings. */
 function cssState(state: StepState): string {
   return state === "in_progress" ? "in-progress" : state;
 }
@@ -71,7 +83,7 @@ function OllamaInstructions() {
           <code className="ob-code-block">brew install ollama</code>
           <p className="subtle">2. Start the server:</p>
           <code className="ob-code-block">ollama serve</code>
-          <p className="subtle">3. Pull a model (AI cleanup):</p>
+          <p className="subtle">3. Pull a model:</p>
           <code className="ob-code-block">ollama pull llama3.2:3b</code>
         </div>
       )}
@@ -89,8 +101,6 @@ function StepCard({ step }: { step: StepDef }) {
         {step.optional && <span className="ob-optional-tag">Optional</span>}
         <StatusBadge state={step.state} />
       </div>
-
-      {/* Body is hidden via CSS for done cards; always rendered so transitions work */}
       <div className="ob-card-body">
         <p className="ob-card-desc">{step.desc}</p>
         {step.actionLabel && step.onAction && (
@@ -111,7 +121,7 @@ function StepCard({ step }: { step: StepDef }) {
 // ── Step derivation ────────────────────────────────────────────────────────
 
 function deriveSteps(s: OnboardingStatus): StepDef[] {
-  // ── Step 1: Whisper model ────────────────────────────────────────────────
+  // Step 1: Whisper model
   const modelState: StepState = s.model_cached
     ? "done"
     : s.model_downloading
@@ -122,9 +132,9 @@ function deriveSteps(s: OnboardingStatus): StepDef[] {
     ? `Downloading speech model…${
         s.model_download_pct != null ? ` ${s.model_download_pct}%` : ""
       }`
-    : "Soll needs a local Whisper model to transcribe your voice. This one-time download runs entirely on your Mac — nothing leaves your device.";
+    : "Soll needs a local Whisper model to transcribe your voice. A one-time download that runs entirely on your Mac — nothing leaves your device.";
 
-  // ── Step 2: Microphone ───────────────────────────────────────────────────
+  // Step 2: Microphone
   const micState: StepState =
     s.mic_permission === "granted"
       ? "done"
@@ -144,16 +154,16 @@ function deriveSteps(s: OnboardingStatus): StepDef[] {
       ? "Grant Microphone Access"
       : undefined;
 
-  // ── Step 3: Accessibility ────────────────────────────────────────────────
+  // Step 3: Accessibility
   const axState: StepState = s.accessibility ? "done" : "pending";
 
-  // ── Step 4: Ollama (optional) ────────────────────────────────────────────
+  // Step 4: Ollama (optional)
   const ollamaState: StepState = s.ollama_running ? "done" : "pending";
 
-  // ── Step 5: First dictation ──────────────────────────────────────────────
+  // Step 5: First dictation
   const dictState: StepState = s.has_dictated ? "done" : "pending";
 
-  // ── Step 6: Skills (optional) ────────────────────────────────────────────
+  // Step 6: Skills (optional)
   const skillsState: StepState = s.has_skills ? "done" : "pending";
 
   return [
@@ -167,8 +177,8 @@ function deriveSteps(s: OnboardingStatus): StepDef[] {
       onAction:
         modelState === "pending"
           ? async () => {
-              type ModelInfo = { id: string; is_active: boolean };
-              const list = await invoke<ModelInfo[]>("models_list");
+              type M = { id: string; is_active: boolean };
+              const list = await invoke<M[]>("models_list");
               const active = list.find((m) => m.is_active);
               if (active) await invoke("model_download", { id: active.id });
             }
@@ -183,10 +193,7 @@ function deriveSteps(s: OnboardingStatus): StepDef[] {
       actionLabel: micAction,
       onAction:
         micAction != null
-          ? () =>
-              invoke("open_privacy_settings", {
-                section: "Privacy_Microphone",
-              })
+          ? () => invoke("open_privacy_settings", { section: "Privacy_Microphone" })
           : undefined,
     },
     {
@@ -194,14 +201,11 @@ function deriveSteps(s: OnboardingStatus): StepDef[] {
       icon: "⌨️",
       title: "Accessibility access",
       state: axState,
-      desc: "Soll uses Accessibility to paste text into any app. Without it, transcribed text won't be inserted into your cursor position.",
+      desc: "Soll uses Accessibility to paste text into any app. Without it, transcribed text won't be inserted at your cursor.",
       actionLabel: axState !== "done" ? "Open Accessibility Settings" : undefined,
       onAction:
         axState !== "done"
-          ? () =>
-              invoke("open_privacy_settings", {
-                section: "Privacy_Accessibility",
-              })
+          ? () => invoke("open_privacy_settings", { section: "Privacy_Accessibility" })
           : undefined,
     },
     {
@@ -210,7 +214,7 @@ function deriveSteps(s: OnboardingStatus): StepDef[] {
       title: "Ollama — AI cleanup",
       optional: true,
       state: ollamaState,
-      desc: "Ollama runs local AI models to polish your dictation — fixing grammar, punctuation, and capitalisation. Completely optional, but great for longer dictations.",
+      desc: "Ollama runs local AI to polish your dictation — fixing grammar, punctuation, and capitalisation. Optional but great for longer dictations.",
       extra: ollamaState !== "done" ? <OllamaInstructions /> : undefined,
     },
     {
@@ -240,6 +244,7 @@ function deriveSteps(s: OnboardingStatus): StepDef[] {
 
 export function OnboardingApp() {
   const [status, setStatus] = useState<OnboardingStatus | null>(null);
+  const [mock, setMock] = useState(false);
   const polling = useRef(false);
 
   async function fetchStatus() {
@@ -277,15 +282,18 @@ export function OnboardingApp() {
     );
   }
 
-  const steps = deriveSteps(status);
-  const required = steps.filter((s) => !s.optional);
-  const requiredDone = required.filter((s) => s.state === "done").length;
-  const allDone = requiredDone === required.length;
-  const pct = Math.round((requiredDone / required.length) * 100);
+  const displayed = mock ? MOCK_STATUS : status;
+  const steps = deriveSteps(displayed);
+  const totalSteps = steps.length; // 6
+  const doneSteps = steps.filter((s) => s.state === "done").length;
+  const requiredDone = steps.filter((s) => !s.optional && s.state === "done").length;
+  const requiredTotal = steps.filter((s) => !s.optional).length;
+  const allRequiredDone = requiredDone === requiredTotal;
+  const pct = Math.round((doneSteps / totalSteps) * 100);
 
   return (
     <div className="ob-shell">
-      {/* ── Header ──────────────────────────────────────────────────────── */}
+      {/* ── Header ──────────────────────────────────────────────────── */}
       <div className="ob-header">
         <svg
           className="ob-logo"
@@ -310,39 +318,44 @@ export function OnboardingApp() {
         </div>
       </div>
 
-      {/* ── Progress bar ──────────────────────────────────────────────── */}
+      {/* ── Progress ─────────────────────────────────────────────── */}
       <div className="ob-progress-wrap">
         <div className="ob-progress-bar">
-          <div
-            className="ob-progress-fill"
-            style={{ width: `${pct}%` }}
-          />
+          <div className="ob-progress-fill" style={{ width: `${pct}%` }} />
         </div>
         <span className="ob-progress-label">
-          {requiredDone}/{required.length} required
+          {doneSteps}/{totalSteps} steps
         </span>
       </div>
 
-      {/* ── Step cards ───────────────────────────────────────────────── */}
+      {/* ── Step cards ───────────────────────────────────────────── */}
       <div className="ob-steps">
         {steps.map((step) => (
           <StepCard key={step.id} step={step} />
         ))}
       </div>
 
-      {/* ── Footer ───────────────────────────────────────────────────── */}
+      {/* ── Footer ───────────────────────────────────────────────── */}
       <div className="ob-footer">
-        <span className="ob-footer-left">
-          {allDone
-            ? "🎉 All set — Soll is ready to use."
-            : "You can revisit this guide from the tray menu."}
-        </span>
+        <div className="ob-footer-left">
+          {allRequiredDone && !mock ? (
+            <span>🎉 All set — Soll is ready to use.</span>
+          ) : (
+            <button
+              type="button"
+              className="ob-simulate-btn"
+              onClick={() => setMock((m) => !m)}
+            >
+              {mock ? "← Back to live status" : "Preview as new user"}
+            </button>
+          )}
+        </div>
         <button
           type="button"
-          className={`${allDone ? "primary" : "secondary"} ob-done-btn`}
+          className={`${allRequiredDone && !mock ? "primary" : "secondary"} ob-done-btn`}
           onClick={() => void dismiss()}
         >
-          {allDone ? "All Done — Close" : "Close"}
+          {allRequiredDone && !mock ? "All Done — Close" : "Close"}
         </button>
       </div>
     </div>

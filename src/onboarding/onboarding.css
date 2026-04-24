@@ -275,3 +275,20 @@
   padding: 9px 28px;
   font-size: 13.5px;
 }
+
+.ob-simulate-btn {
+  background: none;
+  border: none;
+  color: var(--fg-subtle);
+  font-size: 11.5px;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: rgba(255, 255, 255, 0.2);
+  transition: color 150ms ease;
+}
+.ob-simulate-btn:hover {
+  color: var(--fg);
+}

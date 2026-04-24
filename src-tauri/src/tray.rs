@@ -203,7 +203,24 @@ pub fn open_settings_window(app: &AppHandle) {
 }
 
 pub fn open_onboarding_window(app: &AppHandle) {
-    open_window(app, "onboarding", "Soll — Setup Guide", 560.0, 660.0);
+    // Dedicated builder so we can centre the window on screen.
+    if let Some(existing) = app.get_webview_window("onboarding") {
+        let _ = existing.show();
+        let _ = existing.set_focus();
+        return;
+    }
+    let url = WebviewUrl::App("index.html?view=onboarding".into());
+    match WebviewWindowBuilder::new(app, "onboarding", url)
+        .title("Soll — Setup Guide")
+        .inner_size(560.0, 680.0)
+        .min_inner_size(420.0, 500.0)
+        .resizable(true)
+        .center()
+        .build()
+    {
+        Ok(_) => log::info!("opened onboarding window"),
+        Err(e) => log::error!("open onboarding window: {e:?}"),
+    }
 }
 
 /// Public for commands that need to refresh the tray after model state
