@@ -82,7 +82,7 @@ function Recording() {
   return (
     <div className="overlay-row">
       <LogoMark waveAnimate cursorBlink />
-      <span className="overlay-label">listening</span>
+      <span className="overlay-label">listening...</span>
     </div>
   );
 }

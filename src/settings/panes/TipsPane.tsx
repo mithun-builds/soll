@@ -76,7 +76,7 @@ export function TipsPane() {
 
         <div className="status-legend">
           <div className="status-legend-row">
-            <MiniPill variant="listen" animate label="listening" />
+            <MiniPill variant="listen" animate label="listening..." />
             <span className="status-legend-desc">
               Microphone is live — hold the shortcut and speak now.
             </span>
