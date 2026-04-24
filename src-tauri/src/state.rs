@@ -544,7 +544,7 @@ impl AppState {
                  run={run_ms}ms paste={paste_ms}ms total={total_ms}ms text={trimmed:?}",
                 skill.name
             );
-            self.set_tray(TrayState::Transcribed);
+            tray::set_skill_done(&self.app, &skill.name);
             return Ok(());
         }
 

@@ -19,6 +19,8 @@ const TRAY_ID: &str = "soll-tray";
 const WORKING_BLINK_MS: u64 = 500;
 const TRANSCRIBING_BLINK_MS: u64 = 400;
 const DONE_REVERT_MS: u64 = 900;
+/// Skills show their name in the status line — give the user time to read it.
+const SKILL_DONE_REVERT_MS: u64 = 2000;
 
 static IMG_BLUE: Lazy<Image<'static>> =
     Lazy::new(|| Image::from_bytes(include_bytes!("../icons/tray_blue.png")).unwrap());
@@ -118,7 +120,7 @@ pub fn set_state(app: &AppHandle, state: TrayState) {
         TrayState::Idle => set_icon(app, IMG_YELLOW.clone()),
         TrayState::Transcribed => {
             set_icon(app, IMG_GREEN.clone());
-            schedule_revert(app.clone(), my_epoch);
+            schedule_revert(app.clone(), my_epoch, DONE_REVERT_MS);
         }
         TrayState::Transcribing => {
             set_icon(app, IMG_RED.clone());
@@ -141,6 +143,21 @@ pub fn set_state(app: &AppHandle, state: TrayState) {
             );
         }
     }
+}
+
+/// Show a skill-specific completion banner — "skill: commit ✓" — in the tray
+/// status line, then revert to idle after a longer pause so the user can read
+/// which skill fired and confirm it worked as expected.
+pub fn set_skill_done(app: &AppHandle, skill_name: &str) {
+    let my_epoch = EPOCH.fetch_add(1, Ordering::SeqCst) + 1;
+    let status = format!("skill: {skill_name} ✓");
+    let tooltip = format!("Soll — {skill_name} ✓");
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_tooltip(Some(tooltip.as_str()));
+    }
+    set_status_text(&status);
+    set_icon(app, IMG_GREEN.clone());
+    schedule_revert(app.clone(), my_epoch, SKILL_DONE_REVERT_MS);
 }
 
 /// Rewrite the first (non-interactive) menu item that shows the live state.
@@ -427,9 +444,9 @@ fn start_blink(
     });
 }
 
-fn schedule_revert(app: AppHandle, epoch: u64) {
+fn schedule_revert(app: AppHandle, epoch: u64, after_ms: u64) {
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(DONE_REVERT_MS)).await;
+        tokio::time::sleep(Duration::from_millis(after_ms)).await;
         if EPOCH.load(Ordering::SeqCst) != epoch {
             return;
         }
