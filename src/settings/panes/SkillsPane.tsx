@@ -305,6 +305,9 @@ function KindPane({ kind }: { kind: SkillKind }) {
                   {!s.enabled && <span className="subtle"> · off</span>}
                 </div>
                 <div className="subtle">{s.description}</div>
+                <div className="subtle" style={{ fontSize: "0.75rem", marginTop: "2px", opacity: 0.6 }}>
+                  say: <code>use {s.name} …</code>
+                </div>
               </div>
               <Toggle
                 checked={s.enabled}
@@ -370,6 +373,7 @@ function SkillEditor({
   const [err, setErr] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [submitAttempted, setSubmitAttempted] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const nameEditable = !!skill;
 
@@ -410,12 +414,12 @@ function SkillEditor({
   };
 
   const deleteSkill = async () => {
-    if (!window.confirm(copy.deleteConfirm(name))) return;
     try {
       await invoke("skill_delete", { name });
       onClose(true);
     } catch (e) {
       setErr(String(e));
+      setConfirmingDelete(false);
     }
   };
 
@@ -455,10 +459,31 @@ function SkillEditor({
           Cancel
         </button>
         <div className="spacer" />
-        {skill && (
-          <button type="button" className="danger-btn" onClick={deleteSkill}>
+        {skill && !confirmingDelete && (
+          <button
+            type="button"
+            className="danger-btn"
+            onClick={() => setConfirmingDelete(true)}
+          >
             Delete
           </button>
+        )}
+        {skill && confirmingDelete && (
+          <>
+            <span className="subtle" style={{ alignSelf: "center", fontSize: "0.85rem" }}>
+              Delete "{name}"?
+            </span>
+            <button type="button" className="danger-btn" onClick={deleteSkill}>
+              Yes, delete
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => setConfirmingDelete(false)}
+            >
+              Cancel
+            </button>
+          </>
         )}
       </div>
     </>

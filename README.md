@@ -1,4 +1,4 @@
-# Svara
+# Soll
 
 > Open-source, local-first voice dictation for macOS. A free alternative to Wispr Flow.
 
@@ -32,7 +32,7 @@ Everything runs on-device: [whisper.cpp](https://github.com/ggerganov/whisper.cp
 
 ```bash
 # 1. Clone and enter
-git clone https://github.com/mithun-builds/svara.git && cd svara
+git clone https://github.com/mithun-builds/soll.git && cd soll
 
 # 2. Install deps
 pnpm install
@@ -54,7 +54,7 @@ On first launch macOS will ask for:
 2. **Accessibility** — so AppleScript can send Cmd+V
 3. **Input Monitoring** — for the global hotkey
 
-All three are **one-time** prompts. Svara never sends audio anywhere.
+All three are **one-time** prompts. Soll never sends audio anywhere.
 
 ## Architecture
 

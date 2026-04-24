@@ -12,6 +12,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 pub const KEY_WHISPER_MODEL: &str = "whisper_model";
+pub const KEY_OLLAMA_MODEL: &str = "ollama_model";
 pub const KEY_USER_NAME: &str = "user_name";
 pub const KEY_AI_CLEANUP: &str = "ai_cleanup_enabled";
 /// Comma-separated list of skill names the user has turned off. Disabled

@@ -63,7 +63,7 @@ export function GeneralPane() {
   return (
     <>
       <h1>General</h1>
-      <p className="subtle">Your identity + AI behavior across every dictation.</p>
+      <p className="subtle">Your identity and hotkey — AI settings live in Models.</p>
 
       <form className="pane-section" onSubmit={onSaveText}>
         <label>
@@ -92,24 +92,6 @@ export function GeneralPane() {
               : "Save"}
         </button>
       </form>
-
-      <div className="pane-section toggle-row">
-        <div>
-          <div className="field-label">AI cleanup (Ollama)</div>
-          <div className="subtle hint">
-            Polish grammar, remove fillers, add punctuation. When off, raw
-            Whisper output is pasted.
-          </div>
-        </div>
-        <button
-          type="button"
-          className={`toggle ${s.ai_cleanup_enabled ? "on" : "off"}`}
-          onClick={() => update({ ai_cleanup_enabled: !s.ai_cleanup_enabled })}
-          aria-pressed={s.ai_cleanup_enabled}
-        >
-          <span className="toggle-dot" />
-        </button>
-      </div>
 
       <div className="pane-section readonly-grid">
         <div className="readonly-row">

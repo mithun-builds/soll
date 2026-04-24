@@ -363,7 +363,7 @@ pub fn interpolate(template: &str, vars: &HashMap<String, String>) -> String {
         .into_owned()
 }
 
-/// Try each skill's legacy trigger patterns; return the first match.
+/// Try each skill's trigger patterns; return the first match.
 pub fn match_skill<'a>(
     skills: &'a [Skill],
     raw: &str,
@@ -374,6 +374,78 @@ pub fn match_skill<'a>(
         }
     }
     None
+}
+
+/// Explicit "use [skill-name] [body]" invocation — the voice equivalent of a
+/// slash command. Matches utterances like:
+///
+///   "use commit fixed the null pointer bug"
+///   "Use email, John tomorrow at 5pm"
+///   "USE COMMIT Fixed it."
+///
+/// Case-insensitive on "use" and the skill name. Body preserves original
+/// capitalisation so commit messages, email bodies etc. look right.
+/// Falls back to `None` if the prefix is absent or the name is unknown.
+pub fn direct_invoke<'a>(
+    skills: &'a [Skill],
+    raw: &str,
+) -> Option<(&'a Skill, HashMap<String, String>)> {
+    // Skip any leading non-alphabetic characters (Whisper sometimes adds them).
+    let trimmed = raw.trim();
+    let content_start = trimmed
+        .char_indices()
+        .find(|(_, c)| c.is_alphabetic())
+        .map(|(i, _)| i)
+        .unwrap_or(trimmed.len());
+    let content = &trimmed[content_start..];
+
+    // Require case-insensitive "use" at the front.
+    if !content.to_lowercase().starts_with("use") {
+        return None;
+    }
+    let after_use = &content[3..]; // skip "use"
+
+    // Skip the separator between "use" and the skill name (space, comma, etc.).
+    let name_start = after_use
+        .char_indices()
+        .find(|(_, c)| c.is_alphabetic())
+        .map(|(i, _)| i)
+        .unwrap_or(after_use.len());
+    let after_sep = &after_use[name_start..];
+    if after_sep.is_empty() {
+        return None;
+    }
+
+    // Skill name: run of lowercase letters, digits, and hyphens.
+    let name_len = after_sep
+        .char_indices()
+        .take_while(|(_, c)| c.is_alphanumeric() || *c == '-')
+        .last()
+        .map(|(i, c)| i + c.len_utf8())
+        .unwrap_or(0);
+    if name_len == 0 {
+        return None;
+    }
+    let skill_name = after_sep[..name_len].to_lowercase();
+
+    // Body: everything after the skill name, trimmed of leading separators
+    // and trailing sentence-ending punctuation.
+    let after_name = &after_sep[name_len..];
+    let body_start = after_name
+        .char_indices()
+        .find(|(_, c)| c.is_alphanumeric())
+        .map(|(i, _)| i)
+        .unwrap_or(after_name.len());
+    let body_raw = &after_name[body_start..];
+    let body = body_raw
+        .trim_end_matches(|c: char| matches!(c, '.' | '!' | '?' | ','))
+        .trim()
+        .to_string();
+
+    let skill = skills.iter().find(|s| s.name == skill_name)?;
+    let mut vars = HashMap::new();
+    vars.insert("body".into(), body);
+    Some((skill, vars))
 }
 
 // ── template internals ─────────────────────────────────────────────────────
@@ -787,6 +859,60 @@ Debug: [body]
             Skill::from_markdown(&md).is_err(),
             "space in name should reject"
         );
+    }
+
+    // ── direct_invoke ──────────────────────────────────────────
+
+    fn make_skill(name: &str) -> Skill {
+        Skill::from_markdown(&format!(
+            "## Name\n{name}\n\n## Description\ntest\n\n## Triggers\n- {name} <body>\n\n## Instructions\n[body]\n"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn direct_invoke_basic() {
+        let skills = vec![make_skill("commit")];
+        let (s, vars) = direct_invoke(&skills, "use commit fixed the auth bug").unwrap();
+        assert_eq!(s.name, "commit");
+        assert_eq!(vars["body"], "fixed the auth bug");
+    }
+
+    #[test]
+    fn direct_invoke_case_insensitive() {
+        let skills = vec![make_skill("commit")];
+        let (s, vars) = direct_invoke(&skills, "USE COMMIT Fixed the auth bug").unwrap();
+        assert_eq!(s.name, "commit");
+        // Body preserves original case.
+        assert_eq!(vars["body"], "Fixed the auth bug");
+    }
+
+    #[test]
+    fn direct_invoke_strips_punctuation() {
+        let skills = vec![make_skill("commit")];
+        let (_, vars) = direct_invoke(&skills, "Use commit, fixed the auth bug.").unwrap();
+        assert_eq!(vars["body"], "fixed the auth bug");
+    }
+
+    #[test]
+    fn direct_invoke_unknown_skill_returns_none() {
+        let skills = vec![make_skill("commit")];
+        assert!(direct_invoke(&skills, "use email hello world").is_none());
+    }
+
+    #[test]
+    fn direct_invoke_requires_use_prefix() {
+        let skills = vec![make_skill("commit")];
+        // "commit fixed the bug" should NOT match direct_invoke (it's a trigger match).
+        assert!(direct_invoke(&skills, "commit fixed the bug").is_none());
+    }
+
+    #[test]
+    fn direct_invoke_with_empty_body() {
+        let skills = vec![make_skill("calendly")];
+        let (s, vars) = direct_invoke(&skills, "use calendly").unwrap();
+        assert_eq!(s.name, "calendly");
+        assert_eq!(vars["body"], "");
     }
 
     // ── load_all ───────────────────────────────────────────────

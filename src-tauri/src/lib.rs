@@ -57,6 +57,8 @@ pub fn run() {
             commands::models_list,
             commands::model_activate,
             commands::model_download,
+            commands::ollama_models_list,
+            commands::ollama_model_set,
         ])
         .plugin(
             tauri_plugin_log::Builder::new()

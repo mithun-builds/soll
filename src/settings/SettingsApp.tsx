@@ -15,7 +15,7 @@ type Section =
 
 const NAV: { id: Section; label: string; icon: string }[] = [
   { id: "general", label: "General", icon: "◐" },
-  { id: "models", label: "Whisper model", icon: "▣" },
+  { id: "models", label: "Models", icon: "▣" },
   { id: "dictionary", label: "Dictionary", icon: "☱" },
   { id: "skills", label: "Skills", icon: "✦" },
   { id: "phrases", label: "Phrases", icon: "❝" },

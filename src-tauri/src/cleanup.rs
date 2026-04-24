@@ -9,7 +9,72 @@ use std::time::{Duration, Instant};
 const OLLAMA_GENERATE: &str = "http://127.0.0.1:11434/api/generate";
 const OLLAMA_CHAT: &str = "http://127.0.0.1:11434/api/chat";
 const OLLAMA_TAGS: &str = "http://127.0.0.1:11434/api/tags";
-const MODEL: &str = "llama3.2:3b";
+
+// ── Ollama model catalog ───────────────────────────────────────────────────
+//
+// | Variant        | Tag             | Author  | Size   | Best for               |
+// |----------------|-----------------|---------|--------|------------------------|
+// | Llama3_2_3b    | llama3.2:3b     | Meta    | 2.0 GB | Fast cleanup on any Mac|
+// | Qwen2_5_7b     | qwen2.5:7b      | Alibaba | 4.7 GB | Skills, rewrites, tasks|
+//
+// `DEFAULT` points at the model that should be active. Switch to `Qwen2_5_7b`
+// once you have pulled it (`ollama pull qwen2.5:7b`).
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OllamaModel {
+    /// Meta Llama 3.2 — 3 billion parameters.
+    /// Fast; good at light cleanup. Struggles with complex skill instructions.
+    Llama3_2_3b,
+    /// Alibaba Qwen 2.5 — 7 billion parameters.
+    /// Best-in-class instruction following at this size. Recommended for skills.
+    /// Source: <https://github.com/QwenLM/Qwen2.5> · Apache 2.0
+    Qwen2_5_7b,
+}
+
+impl OllamaModel {
+    /// The model to use until the user explicitly changes it.
+    pub const DEFAULT: Self = Self::Llama3_2_3b;
+
+    /// All selectable models, in display order.
+    pub const ALL: &'static [Self] = &[Self::Llama3_2_3b, Self::Qwen2_5_7b];
+
+    /// Resolve a tag string back to a variant, returns `None` for unknown tags.
+    pub fn from_tag(tag: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|m| m.tag() == tag)
+    }
+
+    /// Ollama tag passed in API requests (e.g. `"llama3.2:3b"`).
+    pub const fn tag(&self) -> &'static str {
+        match self {
+            Self::Llama3_2_3b => "llama3.2:3b",
+            Self::Qwen2_5_7b  => "qwen2.5:7b",
+        }
+    }
+
+    /// Human-readable name shown in logs and (future) Settings UI.
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::Llama3_2_3b => "Llama 3.2 3B",
+            Self::Qwen2_5_7b  => "Qwen 2.5 7B",
+        }
+    }
+
+    /// Author / lab.
+    pub fn author(&self) -> &'static str {
+        match self {
+            Self::Llama3_2_3b => "Meta",
+            Self::Qwen2_5_7b  => "Alibaba / Qwen",
+        }
+    }
+
+    /// Approximate download size label shown in UI.
+    pub fn size_label(&self) -> &'static str {
+        match self {
+            Self::Llama3_2_3b => "2.0 GB",
+            Self::Qwen2_5_7b  => "4.7 GB",
+        }
+    }
+}
 
 const LIVE_TIMEOUT: Duration = Duration::from_secs(4);
 const WARMUP_TIMEOUT: Duration = Duration::from_secs(90);
@@ -111,6 +176,9 @@ pub struct OllamaClient {
     live: reqwest::Client,
     warm: reqwest::Client,
     state: Arc<RwLock<CleanupState>>,
+    /// The Ollama model tag to use, e.g. `"llama3.2:3b"`. Swappable at runtime
+    /// without restarting. Protected by an RwLock for lock-free reads.
+    model: Arc<RwLock<String>>,
 }
 
 impl OllamaClient {
@@ -127,11 +195,44 @@ impl OllamaClient {
             live,
             warm,
             state: Arc::new(RwLock::new(CleanupState::Unknown)),
+            model: Arc::new(RwLock::new(OllamaModel::DEFAULT.tag().to_string())),
         }
     }
 
     pub fn state(&self) -> CleanupState {
         *self.state.read()
+    }
+
+    /// Return the tag of the currently active model (e.g. `"llama3.2:3b"`).
+    pub fn active_model(&self) -> String {
+        self.model.read().clone()
+    }
+
+    /// Switch to a different model for all subsequent requests. Does not
+    /// trigger a re-warmup — Ollama loads the new model on its first use.
+    pub fn set_model(&self, tag: &str) {
+        *self.model.write() = tag.to_string();
+    }
+
+    /// Query Ollama's `/api/tags` and return the set of model tags that are
+    /// already pulled locally. Falls back to an empty set on any error so
+    /// callers can treat "unknown" the same as "not pulled".
+    pub async fn list_pulled_tags(&self) -> HashSet<String> {
+        #[derive(Deserialize)]
+        struct TagModel {
+            name: String,
+        }
+        #[derive(Deserialize)]
+        struct TagsResp {
+            models: Vec<TagModel>,
+        }
+        match self.live.get(OLLAMA_TAGS).send().await {
+            Ok(r) if r.status().is_success() => match r.json::<TagsResp>().await {
+                Ok(resp) => resp.models.into_iter().map(|m| m.name).collect(),
+                Err(_) => HashSet::new(),
+            },
+            _ => HashSet::new(),
+        }
     }
 
     pub async fn warm_up(&self) {
@@ -152,8 +253,9 @@ impl OllamaClient {
         }
 
         let t0 = Instant::now();
+        let model_tag = self.active_model();
         let body = GenReq {
-            model: MODEL,
+            model: &model_tag,
             prompt: "ok".into(),
             stream: false,
             keep_alive: "30m",
@@ -164,12 +266,12 @@ impl OllamaClient {
         };
         match self.warm.post(OLLAMA_GENERATE).json(&body).send().await {
             Ok(r) if r.status().is_success() => {
-                info!("Ollama model {MODEL} warmed up in {:?}", t0.elapsed());
+                info!("Ollama model {model_tag} warmed up in {:?}", t0.elapsed());
                 *self.state.write() = CleanupState::Ready;
             }
             Ok(r) => {
                 warn!(
-                    "Ollama warm-up status {} (model {MODEL} likely not pulled); cleanup disabled",
+                    "Ollama warm-up status {} (model {model_tag} likely not pulled); cleanup disabled",
                     r.status()
                 );
                 *self.state.write() = CleanupState::Unavailable;
@@ -196,8 +298,9 @@ impl OllamaClient {
             }
             CleanupState::Ready => {}
         }
+        let model_tag = self.active_model();
         let body = GenReq {
-            model: MODEL,
+            model: &model_tag,
             prompt: prompt.to_string(),
             stream: false,
             keep_alive: "30m",
@@ -232,8 +335,9 @@ impl OllamaClient {
             }
             CleanupState::Ready => {}
         }
+        let model_tag = self.active_model();
         let body = ChatReq {
-            model: MODEL,
+            model: &model_tag,
             messages: vec![
                 ChatMessage {
                     role: "system",
@@ -286,8 +390,9 @@ impl OllamaClient {
         let prompt = format!(
             "{SYSTEM_PROMPT}{preserve_clause}\n\n--- INPUT ---\n{raw}\n--- CLEANED ---\n"
         );
+        let model_tag = self.active_model();
         let body = GenReq {
-            model: MODEL,
+            model: &model_tag,
             prompt,
             stream: false,
             keep_alive: "30m",

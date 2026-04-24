@@ -16,7 +16,8 @@ use crate::formatter::{self, Format};
 use crate::model::{ensure_model, WhisperModel, CANCELLED_MSG};
 use crate::paste::paste_text;
 use crate::settings::{
-    Settings, DEFAULT_AI_CLEANUP, KEY_AI_CLEANUP, KEY_USER_NAME, KEY_WHISPER_MODEL,
+    Settings, DEFAULT_AI_CLEANUP, KEY_AI_CLEANUP, KEY_OLLAMA_MODEL, KEY_USER_NAME,
+    KEY_WHISPER_MODEL,
 };
 use crate::skills::{self, Skill};
 use crate::transcribe::Transcriber;
@@ -126,7 +127,7 @@ pub struct AppState {
     recorder: Mutex<Option<AudioRecorder>>,
     transcriber: AsyncMutex<Option<Arc<Transcriber>>>,
     swap_guard: AsyncMutex<()>,
-    ollama: OllamaClient,
+    pub ollama: OllamaClient,
     is_recording: Mutex<bool>,
 }
 
@@ -159,6 +160,13 @@ impl AppState {
                 .join(", ")
         );
 
+        let ollama = OllamaClient::new();
+        // Restore persisted Ollama model choice, falling back to the default.
+        let saved_ollama = settings.get_or_default(KEY_OLLAMA_MODEL, crate::cleanup::OllamaModel::DEFAULT.tag());
+        if let Some(m) = crate::cleanup::OllamaModel::from_tag(&saved_ollama) {
+            ollama.set_model(m.tag());
+        }
+
         Self {
             app,
             dictionary: dict,
@@ -170,7 +178,7 @@ impl AppState {
             recorder: Mutex::new(None),
             transcriber: AsyncMutex::new(None),
             swap_guard: AsyncMutex::new(()),
-            ollama: OllamaClient::new(),
+            ollama,
             is_recording: Mutex::new(false),
         }
     }
@@ -468,13 +476,20 @@ impl AppState {
                 .filter(|s| !disabled.contains(&s.name))
                 .cloned()
                 .collect();
-            skills::match_skill(&enabled, &raw).map(|(s, v)| (s.clone(), v))
+            // Try explicit "use [skill-name] [body]" first — more reliable
+            // than trigger matching because Whisper's punctuation/capitalisation
+            // variations can't break it. Fall back to trigger phrases.
+            skills::direct_invoke(&enabled, &raw)
+                .map(|(s, v)| (s.clone(), v))
+                .or_else(|| skills::match_skill(&enabled, &raw).map(|(s, v)| (s.clone(), v)))
         };
 
         // ── Skill execution ──────────────────────────────────────────────────
 
         if let Some((skill, mut vars)) = skill_match {
-            info!("[latency #{n}] running skill: {}", skill.name);
+            let via_direct = raw.trim().to_lowercase().contains("use ");
+            info!("[latency #{n}] running skill: {} (via {})", skill.name,
+                if via_direct { "direct invoke" } else { "trigger" });
 
             let t_run = Instant::now();
 

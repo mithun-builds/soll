@@ -5,8 +5,11 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::cleanup::OllamaModel;
 use crate::dictionary::Entry;
-use crate::settings::{DEFAULT_AI_CLEANUP, KEY_AI_CLEANUP, KEY_USER_NAME, KEY_WHISPER_MODEL};
+use crate::settings::{
+    DEFAULT_AI_CLEANUP, KEY_AI_CLEANUP, KEY_OLLAMA_MODEL, KEY_USER_NAME, KEY_WHISPER_MODEL,
+};
 use crate::state::AppState;
 
 #[derive(Serialize)]
@@ -289,6 +292,53 @@ pub async fn model_download(
         .ok_or_else(|| format!("unknown model: {id}"))?;
     let st = state.inner().clone();
     st.start_download(model).await.map_err(|e| e.to_string())
+}
+
+// ── ollama models ──────────────────────────────────────────────────────────
+
+/// One entry in the AI-model picker list.
+#[derive(Serialize)]
+pub struct OllamaModelInfo {
+    /// Ollama tag, e.g. `"llama3.2:3b"`. Pass back to `ollama_model_set`.
+    pub tag: String,
+    pub display_name: String,
+    pub author: String,
+    pub size: String,
+    /// True when this model is the currently selected one.
+    pub is_active: bool,
+    /// True when the model is already pulled locally in Ollama.
+    pub is_pulled: bool,
+}
+
+/// List all known AI models with their active and pulled state.
+#[tauri::command]
+pub async fn ollama_models_list(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<OllamaModelInfo>, String> {
+    let active = state.ollama.active_model();
+    let pulled = state.ollama.list_pulled_tags().await;
+    Ok(OllamaModel::ALL
+        .iter()
+        .map(|m| OllamaModelInfo {
+            tag: m.tag().to_string(),
+            display_name: m.display_name().to_string(),
+            author: m.author().to_string(),
+            size: m.size_label().to_string(),
+            is_active: m.tag() == active,
+            is_pulled: pulled.contains(m.tag()),
+        })
+        .collect())
+}
+
+/// Persist and activate a new Ollama model. The next LLM call will use it.
+#[tauri::command]
+pub fn ollama_model_set(tag: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    OllamaModel::from_tag(&tag).ok_or_else(|| format!("unknown model tag: {tag}"))?;
+    state.ollama.set_model(&tag);
+    state
+        .settings
+        .set(KEY_OLLAMA_MODEL, &tag)
+        .map_err(|e| e.to_string())
 }
 
 // ── settings (existing) ────────────────────────────────────────────────────
