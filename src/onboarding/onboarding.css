@@ -122,19 +122,28 @@
 
 /* ── Step content ───────────────────────────────────────────────────────── */
 
-.ob-step-icon {
-  font-size: 52px;
-  line-height: 1;
+/* Icon wrapper — consistent sizing for SVG and image icons */
+.ob-step-icon-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
   margin-bottom: 4px;
 }
 
-/* Image logo variant (e.g. Ollama) — invert to white for dark mode */
+/* Minimal white SVG line icon */
+.ob-step-svg {
+  width: 48px;
+  height: 48px;
+  color: #ffffff;
+}
+
+/* Ollama PNG logo — invert black→white for dark background */
 .ob-step-icon-img {
-  width: 52px;
+  width: 46px;
   height: auto;
   filter: invert(1);
-  margin-bottom: 4px;
-  flex-shrink: 0;
 }
 
 .ob-step-meta {
@@ -166,10 +175,9 @@
   margin: 0;
 }
 
-/* button tag needed to beat button.secondary specificity (0,1,1 vs 0,1,0) */
 button.ob-step-action-btn {
   margin-top: 4px;
-  align-self: center;
+  align-self: center !important; /* beats button.secondary's align-self:flex-start */
 }
 
 .ob-step-extra {

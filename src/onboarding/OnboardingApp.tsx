@@ -21,9 +21,7 @@ type StepState = "done" | "in_progress" | "denied" | "pending";
 
 interface StepDef {
   id: string;
-  icon: string;
-  /** Optional image URL — replaces the emoji icon when set. */
-  iconImg?: string;
+  iconNode: React.ReactNode;
   title: string;
   optional?: boolean;
   state: StepState;
@@ -45,6 +43,50 @@ const MOCK_STATUS: OnboardingStatus = {
   has_dictated: false,
   has_skills: false,
   dismissed: false,
+};
+
+// ── Step icons (minimal white SVG line icons) ──────────────────────────────
+
+const ICONS: Record<string, React.ReactNode> = {
+  model: (
+    <svg className="ob-step-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
+      <rect x="1"  y="10" width="2" height="4"  rx="1"/>
+      <rect x="5"  y="7"  width="2" height="10" rx="1"/>
+      <rect x="9"  y="3"  width="2" height="18" rx="1"/>
+      <rect x="13" y="3"  width="2" height="18" rx="1"/>
+      <rect x="17" y="7"  width="2" height="10" rx="1"/>
+      <rect x="21" y="10" width="2" height="4"  rx="1"/>
+    </svg>
+  ),
+  mic: (
+    <svg className="ob-step-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="9" y="2" width="6" height="12" rx="3"/>
+      <path d="M5 11a7 7 0 0 0 14 0"/>
+      <line x1="12" y1="18" x2="12" y2="22"/>
+      <line x1="8"  y1="22" x2="16" y2="22"/>
+    </svg>
+  ),
+  accessibility: (
+    <svg className="ob-step-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="4" r="1.8" fill="currentColor" stroke="none"/>
+      <line x1="4" y1="9" x2="20" y2="9"/>
+      <path d="M12 9v5l-3 7"/>
+      <path d="M12 14l3 7"/>
+    </svg>
+  ),
+  ollama: (
+    <img src={ollamaLogo} className="ob-step-icon-img" alt="Ollama"/>
+  ),
+  dictation: (
+    <svg className="ob-step-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
+    </svg>
+  ),
+  skills: (
+    <svg className="ob-step-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+    </svg>
+  ),
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -118,7 +160,7 @@ function deriveSteps(s: OnboardingStatus): StepDef[] {
   return [
     {
       id: "model",
-      icon: "◈",
+      iconNode: ICONS.model,
       title: "Speech recognition model",
       state: modelState,
       desc: s.model_downloading
@@ -137,7 +179,7 @@ function deriveSteps(s: OnboardingStatus): StepDef[] {
     },
     {
       id: "mic",
-      icon: "🎤",
+      iconNode: ICONS.mic,
       title: "Microphone access",
       state: micState,
       desc:
@@ -157,7 +199,7 @@ function deriveSteps(s: OnboardingStatus): StepDef[] {
     },
     {
       id: "accessibility",
-      icon: "⌨️",
+      iconNode: ICONS.accessibility,
       title: "Accessibility access",
       state: axState,
       desc: "Soll uses Accessibility to paste text into any app. Without it, transcribed text won't be inserted at your cursor.",
@@ -169,8 +211,7 @@ function deriveSteps(s: OnboardingStatus): StepDef[] {
     },
     {
       id: "ollama",
-      icon: "🤖",
-      iconImg: ollamaLogo,
+      iconNode: ICONS.ollama,
       title: "Ollama — AI cleanup",
       optional: true,
       state: ollamaState,
@@ -179,14 +220,14 @@ function deriveSteps(s: OnboardingStatus): StepDef[] {
     },
     {
       id: "dictation",
-      icon: "✍️",
+      iconNode: ICONS.dictation,
       title: "Your first dictation",
       state: dictState,
       desc: "Hold ⌃⇧Space anywhere, speak naturally, then release. Soll transcribes and pastes your words into the focused app.",
     },
     {
       id: "skills",
-      icon: "⚡",
+      iconNode: ICONS.skills,
       title: "Create a skill",
       optional: true,
       state: skillsState,
@@ -250,10 +291,7 @@ function WizardStep({
   return (
     <div className={`ob-slide ob-slide--enter-${animDir}`}>
       <div className="ob-slide-inner">
-        {step.iconImg
-          ? <img src={step.iconImg} className="ob-step-icon-img" alt={step.title} />
-          : <div className="ob-step-icon">{step.icon}</div>
-        }
+        <div className="ob-step-icon-wrap">{step.iconNode}</div>
 
         <div className="ob-step-meta">
           <span className="ob-step-num">Step {index + 1} of {total}</span>
