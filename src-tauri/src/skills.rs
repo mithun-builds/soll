@@ -376,16 +376,19 @@ pub fn match_skill<'a>(
     None
 }
 
-/// Explicit "use [skill-name] [body]" invocation — the voice equivalent of a
-/// slash command. Matches utterances like:
+/// Explicit direct invocation by kind prefix — the voice equivalent of a
+/// slash command. Uses "skill" for AI skills and "phrase" for literal phrases,
+/// followed by a trigger phrase (not the internal name):
 ///
-///   "use commit fixed the null pointer bug"
-///   "Use email, John tomorrow at 5pm"
-///   "USE COMMIT Fixed it."
+///   "skill git commit fixed the null pointer bug"
+///   "skill slack John tomorrow at 5pm"
+///   "phrase calendly"
+///   "PHRASE CALENDLY"
 ///
-/// Case-insensitive on "use" and the skill name. Body preserves original
-/// capitalisation so commit messages, email bodies etc. look right.
-/// Falls back to `None` if the prefix is absent or the name is unknown.
+/// After stripping the prefix the remainder is matched against trigger patterns
+/// of the appropriate kind, identical to how normal trigger matching works.
+/// This means multi-word trigger names like "git commit" work naturally.
+/// Enforces kind: "skill" only matches AI skills, "phrase" only matches phrases.
 pub fn direct_invoke<'a>(
     skills: &'a [Skill],
     raw: &str,
@@ -398,54 +401,46 @@ pub fn direct_invoke<'a>(
         .map(|(i, _)| i)
         .unwrap_or(trimmed.len());
     let content = &trimmed[content_start..];
+    let lower = content.to_lowercase();
 
-    // Require case-insensitive "use" at the front.
-    if !content.to_lowercase().starts_with("use") {
+    // Require "skill" or "phrase" at the front; remember which kind was asked for.
+    let (keyword_len, require_ai) = if lower.starts_with("skill") {
+        (5, true)
+    } else if lower.starts_with("phrase") {
+        (6, false)
+    } else {
         return None;
-    }
-    let after_use = &content[3..]; // skip "use"
+    };
+    let after_keyword = &content[keyword_len..];
 
-    // Skip the separator between "use" and the skill name (space, comma, etc.).
-    let name_start = after_use
+    // Skip the separator between the keyword and the trigger text.
+    let trigger_start = after_keyword
         .char_indices()
         .find(|(_, c)| c.is_alphabetic())
         .map(|(i, _)| i)
-        .unwrap_or(after_use.len());
-    let after_sep = &after_use[name_start..];
-    if after_sep.is_empty() {
+        .unwrap_or(after_keyword.len());
+    let trigger_text = after_keyword[trigger_start..].trim();
+
+    if trigger_text.is_empty() {
         return None;
     }
 
-    // Skill name: run of lowercase letters, digits, and hyphens.
-    let name_len = after_sep
-        .char_indices()
-        .take_while(|(_, c)| c.is_alphanumeric() || *c == '-')
-        .last()
-        .map(|(i, c)| i + c.len_utf8())
-        .unwrap_or(0);
-    if name_len == 0 {
-        return None;
+    // Match the trigger text against each skill's trigger patterns,
+    // filtered to the requested kind.
+    for skill in skills {
+        let kind_matches = if require_ai {
+            matches!(skill.kind, SkillKind::Ai { .. })
+        } else {
+            matches!(skill.kind, SkillKind::Phrase { .. })
+        };
+        if !kind_matches {
+            continue;
+        }
+        if let Some(vars) = skill.matches(trigger_text) {
+            return Some((skill, vars));
+        }
     }
-    let skill_name = after_sep[..name_len].to_lowercase();
-
-    // Body: everything after the skill name, trimmed of leading separators
-    // and trailing sentence-ending punctuation.
-    let after_name = &after_sep[name_len..];
-    let body_start = after_name
-        .char_indices()
-        .find(|(_, c)| c.is_alphanumeric())
-        .map(|(i, _)| i)
-        .unwrap_or(after_name.len());
-    let body_raw = &after_name[body_start..];
-    let body = body_raw
-        .trim_end_matches(|c: char| matches!(c, '.' | '!' | '?' | ','))
-        .trim()
-        .to_string();
-
-    let skill = skills.iter().find(|s| s.name == skill_name)?;
-    let mut vars = HashMap::new();
-    vars.insert("body".into(), body);
-    Some((skill, vars))
+    None
 }
 
 // ── template internals ─────────────────────────────────────────────────────
@@ -863,56 +858,79 @@ Debug: [body]
 
     // ── direct_invoke ──────────────────────────────────────────
 
-    fn make_skill(name: &str) -> Skill {
+    fn make_ai_skill(name: &str, trigger: &str) -> Skill {
         Skill::from_markdown(&format!(
-            "## Name\n{name}\n\n## Description\ntest\n\n## Triggers\n- {name} <body>\n\n## Instructions\n[body]\n"
+            "## Name\n{name}\n\n## Description\ntest\n\n## Triggers\n- {trigger}\n\n## Instructions\n[body]\n"
+        ))
+        .unwrap()
+    }
+
+    fn make_phrase_skill(name: &str, trigger: &str) -> Skill {
+        Skill::from_markdown(&format!(
+            "## Name\n{name}\n\n## Description\ntest\n\n## Triggers\n- {trigger}\n\n## Phrase\nhello world\n"
         ))
         .unwrap()
     }
 
     #[test]
-    fn direct_invoke_basic() {
-        let skills = vec![make_skill("commit")];
-        let (s, vars) = direct_invoke(&skills, "use commit fixed the auth bug").unwrap();
+    fn direct_invoke_skill_single_word_trigger() {
+        let skills = vec![make_ai_skill("commit", "commit <body>")];
+        let (s, vars) = direct_invoke(&skills, "skill commit fixed the auth bug").unwrap();
         assert_eq!(s.name, "commit");
         assert_eq!(vars["body"], "fixed the auth bug");
+    }
+
+    #[test]
+    fn direct_invoke_skill_multi_word_trigger() {
+        // "skill git commit …" should match a skill whose trigger is "git commit <body>"
+        let skills = vec![make_ai_skill("commit", "git commit <body>")];
+        let (s, vars) = direct_invoke(&skills, "skill git commit fixed the auth bug").unwrap();
+        assert_eq!(s.name, "commit");
+        assert_eq!(vars["body"], "fixed the auth bug");
+    }
+
+    #[test]
+    fn direct_invoke_phrase_basic() {
+        let skills = vec![make_phrase_skill("calendly", "calendly")];
+        let (s, _vars) = direct_invoke(&skills, "phrase calendly").unwrap();
+        assert_eq!(s.name, "calendly");
     }
 
     #[test]
     fn direct_invoke_case_insensitive() {
-        let skills = vec![make_skill("commit")];
-        let (s, vars) = direct_invoke(&skills, "USE COMMIT Fixed the auth bug").unwrap();
+        let skills = vec![make_ai_skill("commit", "commit <body>")];
+        let (s, vars) = direct_invoke(&skills, "SKILL COMMIT Fixed the auth bug").unwrap();
         assert_eq!(s.name, "commit");
-        // Body preserves original case.
         assert_eq!(vars["body"], "Fixed the auth bug");
     }
 
     #[test]
-    fn direct_invoke_strips_punctuation() {
-        let skills = vec![make_skill("commit")];
-        let (_, vars) = direct_invoke(&skills, "Use commit, fixed the auth bug.").unwrap();
-        assert_eq!(vars["body"], "fixed the auth bug");
+    fn direct_invoke_no_matching_trigger_returns_none() {
+        let skills = vec![make_ai_skill("commit", "commit <body>")];
+        assert!(direct_invoke(&skills, "skill email hello world").is_none());
     }
 
     #[test]
-    fn direct_invoke_unknown_skill_returns_none() {
-        let skills = vec![make_skill("commit")];
-        assert!(direct_invoke(&skills, "use email hello world").is_none());
-    }
-
-    #[test]
-    fn direct_invoke_requires_use_prefix() {
-        let skills = vec![make_skill("commit")];
-        // "commit fixed the bug" should NOT match direct_invoke (it's a trigger match).
+    fn direct_invoke_requires_skill_or_phrase_prefix() {
+        let skills = vec![make_ai_skill("commit", "commit <body>")];
+        // Bare trigger without prefix should NOT match direct_invoke.
         assert!(direct_invoke(&skills, "commit fixed the bug").is_none());
+        // Old "use" prefix no longer works.
+        assert!(direct_invoke(&skills, "use commit fixed the bug").is_none());
     }
 
     #[test]
-    fn direct_invoke_with_empty_body() {
-        let skills = vec![make_skill("calendly")];
-        let (s, vars) = direct_invoke(&skills, "use calendly").unwrap();
-        assert_eq!(s.name, "calendly");
-        assert_eq!(vars["body"], "");
+    fn direct_invoke_enforces_kind_skill_wont_match_phrase() {
+        let skills = vec![make_phrase_skill("calendly", "calendly")];
+        // "skill calendly" should not match a phrase-kind skill.
+        assert!(direct_invoke(&skills, "skill calendly").is_none());
+    }
+
+    #[test]
+    fn direct_invoke_enforces_kind_phrase_wont_match_ai() {
+        let skills = vec![make_ai_skill("commit", "commit <body>")];
+        // "phrase commit ..." should not match an AI skill.
+        assert!(direct_invoke(&skills, "phrase commit fixed the bug").is_none());
     }
 
     // ── load_all ───────────────────────────────────────────────

@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Tray app + dynamically-created windows (dictionary CRUD)",
-  "windows": ["main", "dictionary", "legend", "settings"],
+  "windows": ["main", "dictionary", "legend", "settings", "overlay"],
   "permissions": [
     "core:default",
     "core:window:allow-show",

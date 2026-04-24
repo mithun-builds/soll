@@ -1,46 +1,46 @@
-type StatusRow = {
-  key: string;
-  title: string;
-  swatch: string;
-  pulse: "none" | "slow" | "medium";
-  when: string;
-  action: string;
-};
-
-const STATUS_ROWS: StatusRow[] = [
-  {
-    key: "idle",
-    title: "Idle",
-    swatch: "#fde047",
-    pulse: "none",
-    when: "Ready for the next dictation",
-    action: "Hold ⌃⇧Space when you want to speak",
-  },
-  {
-    key: "working",
-    title: "Working",
-    swatch: "#38bdf8",
-    pulse: "medium",
-    when: "Loading, initializing mic, or processing",
-    action: "Wait — don't speak yet",
-  },
-  {
-    key: "transcribing",
-    title: "Transcribing",
-    swatch: "#ef4444",
-    pulse: "medium",
-    when: "Microphone is live and capturing your voice",
-    action: "Speak now",
-  },
-  {
-    key: "transcribed",
-    title: "Transcribed",
-    swatch: "#22c55e",
-    pulse: "none",
-    when: "Text just pasted into the focused app",
-    action: "Done — returns to Idle in ~1 second",
-  },
-];
+// Mini animated pill preview — reuses the same CSS classes as the real overlay.
+function MiniPill({
+  variant,
+  animate = false,
+  check = false,
+  dim,
+  label,
+}: {
+  variant: "listen" | "process" | "done";
+  animate?: boolean;
+  check?: boolean;
+  dim?: string;
+  label: string;
+}) {
+  const heights = [4, 8, 15, 13, 8, 4];
+  const delays  = [0.30, 0.15, 0, 0.10, 0.22, 0.36];
+  return (
+    <div className="tip-pill">
+      <div className={`lm lm--${variant}`}>
+        {[0, 1, 2].map((i) => (
+          <div
+            key={i}
+            className={`lm-bar${animate ? " lm-bar-animate" : ""}`}
+            style={{ height: heights[i], ...(animate ? { animationDelay: `${delays[i]}s` } : {}) }}
+          />
+        ))}
+        <div className={`lm-cursor${animate ? " lm-cursor-blink" : ""}`} />
+        {[3, 4, 5].map((i) => (
+          <div
+            key={i}
+            className={`lm-bar${animate ? " lm-bar-animate" : ""}`}
+            style={{ height: heights[i], ...(animate ? { animationDelay: `${delays[i]}s` } : {}) }}
+          />
+        ))}
+      </div>
+      {check && <span className="tip-pill-check">✓</span>}
+      <span className="tip-pill-label">
+        {dim && <span className="tip-pill-dim">{dim}</span>}
+        {label}
+      </span>
+    </div>
+  );
+}
 
 export function TipsPane() {
   return (
@@ -56,39 +56,105 @@ export function TipsPane() {
         <ul className="tips-list">
           <li>
             <strong>Hold</strong> <code>⌃⇧Space</code> anywhere to record;{" "}
-            <strong>release</strong> to transcribe and paste into the focused
-            app.
+            <strong>release</strong> to transcribe and paste into the focused app.
           </li>
           <li>
-            Quick taps under ¼ second are ignored — hold until you finish
-            speaking.
+            Quick taps under ¼ second are ignored — hold until you finish speaking.
           </li>
-          <li>Everything runs locally. No audio ever leaves your Mac.</li>
+          <li>Everything runs locally. No audio ever leaves your device.</li>
         </ul>
       </div>
 
-      {/* ── Status colors ──────────────────────────────────────────── */}
+      {/* ── Status indicator ───────────────────────────────────────── */}
       <div className="pane-section tips-section">
         <h2>Status indicator</h2>
         <p className="subtle">
-          Watch the tray icon to know when to speak. The menu's top line always
-          shows the exact status text.
+          A floating pill appears at the bottom of your screen during each
+          dictation. When you're idle, it's gone — nothing to look at until you
+          start speaking.
         </p>
-        <div className="legend-list">
-          {STATUS_ROWS.map((row) => (
-            <div key={row.key} className="legend-row">
-              <div
-                className={`legend-dot legend-dot-${row.pulse}`}
-                style={{ background: row.swatch }}
-              />
-              <div>
-                <div className="field-label">{row.title}</div>
-                <div className="subtle">{row.when}</div>
-                <div>{row.action}</div>
-              </div>
-            </div>
-          ))}
+
+        <div className="status-legend">
+          <div className="status-legend-row">
+            <MiniPill variant="listen" animate label="listening" />
+            <span className="status-legend-desc">
+              Microphone is live — hold the shortcut and speak now.
+            </span>
+          </div>
+          <div className="status-legend-row">
+            <MiniPill variant="process" animate label="processing…" />
+            <span className="status-legend-desc">
+              Transcribing and running AI cleanup on your speech.
+            </span>
+          </div>
+          <div className="status-legend-row">
+            <MiniPill variant="done" check label="done" />
+            <span className="status-legend-desc">
+              Text pasted successfully — clears in about a second.
+            </span>
+          </div>
+          <div className="status-legend-row">
+            <MiniPill variant="done" check dim="skill: " label="commit" />
+            <span className="status-legend-desc">
+              A skill or phrase fired — shows its name so you can verify.
+            </span>
+          </div>
         </div>
+
+        <div className="hint-callout">
+          <strong>Menu bar icon</strong> — always a static white logo. A small{" "}
+          <span style={{ color: "#ef4444", fontWeight: 600 }}>red dot</span>{" "}
+          badge appears in the corner while the model is loading or
+          initializing. Once it disappears, Soll is ready.
+        </div>
+      </div>
+
+      {/* ── Skills ─────────────────────────────────────────────────── */}
+      <div className="pane-section tips-section">
+        <h2>Skills — AI-powered voice macros</h2>
+        <p className="subtle">
+          A skill listens for a trigger phrase and reshapes your dictation into
+          a specific format using a local AI model.
+        </p>
+        <ul className="tips-list">
+          <li>
+            Speak a <strong>trigger phrase</strong> to activate — e.g.{" "}
+            <em>"git commit fixed the null pointer bug"</em> → a clean commit
+            message.
+          </li>
+          <li>
+            Or say <strong>skill [trigger]</strong> to invoke directly — e.g.{" "}
+            <code>skill git commit fixed the null pointer bug</code>.
+          </li>
+          <li>
+            Good candidates for your own skills: <em>Slack messages</em>,{" "}
+            <em>meeting notes</em>, <em>todo items</em>, <em>commit messages</em>{" "}
+            — anywhere the output has a predictable shape.
+          </li>
+        </ul>
+      </div>
+
+      {/* ── Phrases ────────────────────────────────────────────────── */}
+      <div className="pane-section tips-section">
+        <h2>Phrases — instant text snippets</h2>
+        <p className="subtle">
+          A phrase pastes a saved block of text verbatim — no AI, no latency.
+          Great for Calendly links, signatures, canned replies.
+        </p>
+        <ul className="tips-list">
+          <li>
+            Speak a trigger phrase to paste instantly — e.g.{" "}
+            <em>"calendly"</em> → your booking link.
+          </li>
+          <li>
+            Or say <strong>phrase [trigger]</strong> to invoke directly — e.g.{" "}
+            <code>phrase calendly</code>.
+          </li>
+          <li>
+            Use <code>[body]</code> or <code>&lt;variable&gt;</code> in the
+            phrase text to splice in words captured from the trigger.
+          </li>
+        </ul>
       </div>
 
       {/* ── List shortcuts ─────────────────────────────────────────── */}
@@ -96,8 +162,7 @@ export function TipsPane() {
         <h2>Format a list while dictating</h2>
         <p className="subtle">
           Start your sentence with one of these phrases and Soll formats the
-          rest as a list. No AI cleanup runs on lists — what you say is what
-          you get.
+          rest as a list automatically.
         </p>
         <ul className="tips-list">
           <li>
@@ -118,7 +183,7 @@ export function TipsPane() {
       <div className="pane-section tips-section">
         <h2>Self-correct mid-sentence</h2>
         <p className="subtle">
-          Realized you said the wrong thing? Just say the right one and Soll
+          Realized you said the wrong thing? Just say the right one — Soll
           rewrites it. Works for numbers, times, weekdays, and short names.
         </p>
         <ul className="tips-list">
@@ -126,8 +191,7 @@ export function TipsPane() {
             <em>"meet at 5 pm actually 6 pm"</em> → <code>meet at 6 pm</code>
           </li>
           <li>
-            <em>"due Tuesday no wait Wednesday"</em> →{" "}
-            <code>due Wednesday</code>
+            <em>"due Tuesday no wait Wednesday"</em> → <code>due Wednesday</code>
           </li>
           <li>
             <em>"3 apples I mean 4 apples"</em> → <code>4 apples</code>
@@ -138,27 +202,6 @@ export function TipsPane() {
           <code>actually</code>, <code>I mean</code>, <code>no wait</code>,{" "}
           <code>scratch that</code>, <code>correction</code>,{" "}
           <code>or rather</code>, <code>make that</code>, <code>sorry</code>.
-        </p>
-      </div>
-
-      {/* ── Skills ─────────────────────────────────────────────────── */}
-      <div className="pane-section tips-section">
-        <h2>Skills turn speech into structured text</h2>
-        <p className="subtle">
-          A skill is a voice macro — a phrase Soll recognizes and reshapes
-          into a specific format. One ships with the app; you can edit, turn
-          off, delete, or add your own in the Skills pane.
-        </p>
-        <ul className="tips-list">
-          <li>
-            <em>"email Jane we'll push the launch to next Friday"</em> → a
-            full, polite email signed with your name
-          </li>
-        </ul>
-        <p className="subtle">
-          Good candidates for your own skills: <em>slack messages</em>,{" "}
-          <em>meeting notes</em>, <em>todo items</em>, <em>commit messages</em>{" "}
-          — anywhere the output has a predictable shape.
         </p>
       </div>
 
@@ -178,7 +221,7 @@ export function TipsPane() {
         </ul>
       </div>
 
-      {/* ── Under the hood cleanup ─────────────────────────────────── */}
+      {/* ── Quiet cleanup ──────────────────────────────────────────── */}
       <div className="pane-section tips-section">
         <h2>Stuff Soll quietly cleans up</h2>
         <ul className="tips-list">
@@ -195,10 +238,6 @@ export function TipsPane() {
           <li>
             LLM preambles like <em>"Here's the polished version:"</em> are
             stripped before paste.
-          </li>
-          <li>
-            <em>"I"</em>, weekdays, and months get capitalized in emails and
-            other polished output.
           </li>
         </ul>
       </div>

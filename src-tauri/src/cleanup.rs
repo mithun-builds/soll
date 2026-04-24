@@ -93,7 +93,6 @@ Hard rules:
 - Do not paraphrase or reword.
 - Do not add words that are not in the input.
 - Do not merge, split, or reorder sentences.
-- If you are uncertain about any change, output the input UNCHANGED.
 
 Return ONLY the cleaned text. No preface, no quotes, no explanation, no markdown.";
 

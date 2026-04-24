@@ -491,7 +491,8 @@ impl AppState {
         // ── Skill execution ──────────────────────────────────────────────────
 
         if let Some((skill, mut vars)) = skill_match {
-            let via_direct = raw.trim().to_lowercase().contains("use ");
+            let lower = raw.trim().to_lowercase();
+            let via_direct = lower.starts_with("skill ") || lower.starts_with("phrase ");
             info!("[latency #{n}] running skill: {} (via {})", skill.name,
                 if via_direct { "direct invoke" } else { "trigger" });
 
@@ -550,7 +551,7 @@ impl AppState {
                 skill.name
             );
             tray::set_skill_done(&self.app, &skill.name);
-            crate::overlay::skill_done(&self.app, &skill.name);
+            crate::overlay::skill_done(&self.app, &skill.name, matches!(&skill.kind, skills::SkillKind::Phrase { .. }));
             return Ok(());
         }
 

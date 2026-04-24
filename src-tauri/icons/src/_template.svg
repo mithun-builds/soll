@@ -1,0 +1,13 @@
+<!-- Master shape reference — not used directly.
+     Bar color  = BARS   (changes per state)
+     Cursor color = #fde047 (amber, always)
+
+     Layout at 22×22 (wave bars + I-beam cursor):
+       bar1  x=0.5   h=4   (short)
+       bar2  x=3.5   h=8   (medium)
+       bar3  x=6.5   h=15  (tall)
+       cursor x=10.75 h=17 (I-beam)
+       bar4  x=14    h=13  (medium-tall)
+       bar5  x=17.5  h=8   (medium)
+       bar6  x=20.5  h=4   (short)
+-->

@@ -16,24 +16,16 @@ use crate::model::WhisperModel;
 use crate::state::AppState;
 
 const TRAY_ID: &str = "soll-tray";
-const WORKING_BLINK_MS: u64 = 500;
-const TRANSCRIBING_BLINK_MS: u64 = 400;
 const DONE_REVERT_MS: u64 = 900;
 /// Skills show their name in the status line — give the user time to read it.
 const SKILL_DONE_REVERT_MS: u64 = 2000;
 
-static IMG_BLUE: Lazy<Image<'static>> =
-    Lazy::new(|| Image::from_bytes(include_bytes!("../icons/tray_blue.png")).unwrap());
-static IMG_BLUE_DIM: Lazy<Image<'static>> =
-    Lazy::new(|| Image::from_bytes(include_bytes!("../icons/tray_blue_dim.png")).unwrap());
-static IMG_YELLOW: Lazy<Image<'static>> =
-    Lazy::new(|| Image::from_bytes(include_bytes!("../icons/tray_yellow.png")).unwrap());
-static IMG_RED: Lazy<Image<'static>> =
-    Lazy::new(|| Image::from_bytes(include_bytes!("../icons/tray_red.png")).unwrap());
-static IMG_RED_DIM: Lazy<Image<'static>> =
-    Lazy::new(|| Image::from_bytes(include_bytes!("../icons/tray_red_dim.png")).unwrap());
-static IMG_GREEN: Lazy<Image<'static>> =
-    Lazy::new(|| Image::from_bytes(include_bytes!("../icons/tray_green.png")).unwrap());
+/// Default — pure white wave mark, static, used for every state.
+static IMG_WHITE: Lazy<Image<'static>> =
+    Lazy::new(|| Image::from_bytes(include_bytes!("../icons/tray_white.png")).unwrap());
+/// Loading / Initializing — same white mark with a small red badge top-right.
+static IMG_BADGE: Lazy<Image<'static>> =
+    Lazy::new(|| Image::from_bytes(include_bytes!("../icons/tray_badge.png")).unwrap());
 
 static EPOCH: AtomicU64 = AtomicU64::new(0);
 
@@ -89,7 +81,7 @@ impl TrayState {
 pub fn build_tray(app: &AppHandle) -> Result<()> {
     let menu = build_menu(app)?;
     TrayIconBuilder::with_id(TRAY_ID)
-        .icon(IMG_BLUE.clone())
+        .icon(IMG_BADGE.clone())
         .icon_as_template(false)
         .tooltip(TrayState::Loading.tooltip())
         .menu(&menu)
@@ -117,30 +109,13 @@ pub fn set_state(app: &AppHandle, state: TrayState) {
     set_status_text(state.status_text());
 
     match state {
-        TrayState::Idle => set_icon(app, IMG_YELLOW.clone()),
-        TrayState::Transcribed => {
-            set_icon(app, IMG_GREEN.clone());
-            schedule_revert(app.clone(), my_epoch, DONE_REVERT_MS);
+        // Loading / Initializing — white logo + red badge until ready.
+        TrayState::Loading | TrayState::Initializing => {
+            set_icon(app, IMG_BADGE.clone());
         }
-        TrayState::Transcribing => {
-            set_icon(app, IMG_RED.clone());
-            start_blink(
-                app.clone(),
-                my_epoch,
-                IMG_RED.clone(),
-                IMG_RED_DIM.clone(),
-                TRANSCRIBING_BLINK_MS,
-            );
-        }
-        TrayState::Loading | TrayState::Initializing | TrayState::Processing => {
-            set_icon(app, IMG_BLUE.clone());
-            start_blink(
-                app.clone(),
-                my_epoch,
-                IMG_BLUE.clone(),
-                IMG_BLUE_DIM.clone(),
-                WORKING_BLINK_MS,
-            );
+        // Everything else — plain white logo, no animation. The pill handles status.
+        _ => {
+            set_icon(app, IMG_WHITE.clone());
         }
     }
 }
@@ -156,7 +131,7 @@ pub fn set_skill_done(app: &AppHandle, skill_name: &str) {
         let _ = tray.set_tooltip(Some(tooltip.as_str()));
     }
     set_status_text(&status);
-    set_icon(app, IMG_GREEN.clone());
+    set_icon(app, IMG_WHITE.clone());
     schedule_revert(app.clone(), my_epoch, SKILL_DONE_REVERT_MS);
 }
 
@@ -451,7 +426,7 @@ fn schedule_revert(app: AppHandle, epoch: u64, after_ms: u64) {
             return;
         }
         EPOCH.fetch_add(1, Ordering::SeqCst);
-        set_icon(&app, IMG_YELLOW.clone());
+        set_icon(&app, IMG_WHITE.clone());
         set_status_text(TrayState::Idle.status_text());
         if let Some(tray) = app.tray_by_id(TRAY_ID) {
             let _ = tray.set_tooltip(Some(TrayState::Idle.tooltip()));

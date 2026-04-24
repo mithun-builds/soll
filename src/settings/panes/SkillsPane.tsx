@@ -289,6 +289,12 @@ function KindPane({ kind }: { kind: SkillKind }) {
       </div>
       <p className="subtle">{copy.subtitle}</p>
 
+      <div className="hint-callout">
+        Say <strong>{kind === "ai" ? "skill" : "phrase"} [trigger]</strong> to activate directly — e.g.{" "}
+        <em>{kind === "ai" ? '"skill commit …"' : '"phrase calendly"'}</em>.
+        Or speak a trigger phrase preceded by <strong>{kind === "ai" ? "skill" : "phrase"}</strong> (shown on each card) to activate hands-free.
+      </div>
+
       {skills.length === 0 ? (
         <div className="empty-hint">{copy.emptyHint}</div>
       ) : (
@@ -305,9 +311,17 @@ function KindPane({ kind }: { kind: SkillKind }) {
                   {!s.enabled && <span className="subtle"> · off</span>}
                 </div>
                 <div className="subtle">{s.description}</div>
-                <div className="subtle" style={{ fontSize: "0.75rem", marginTop: "2px", opacity: 0.6 }}>
-                  say: <code>use {s.name} …</code>
-                </div>
+                {s.triggers.length > 0 && (
+                  <div className="subtle" style={{ fontSize: "0.75rem", marginTop: "3px", opacity: 0.55 }}>
+                    {s.triggers.slice(0, 3).map((t, i) => (
+                      <span key={i}>
+                        {i > 0 && <span style={{ margin: "0 4px", opacity: 0.4 }}>·</span>}
+                        <code><span style={{ opacity: 0.5 }}>{kind === "ai" ? "skill " : "phrase "}</span>{t}</code>
+                      </span>
+                    ))}
+                    {s.triggers.length > 3 && <span style={{ marginLeft: "4px" }}>+{s.triggers.length - 3} more</span>}
+                  </div>
+                )}
               </div>
               <Toggle
                 checked={s.enabled}
