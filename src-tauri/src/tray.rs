@@ -113,6 +113,11 @@ pub fn set_state(app: &AppHandle, state: TrayState) {
         TrayState::Loading | TrayState::Initializing => {
             set_icon(app, IMG_BADGE.clone());
         }
+        // Transcribed — show "Transcribed ✓" briefly, then revert to idle.
+        TrayState::Transcribed => {
+            set_icon(app, IMG_WHITE.clone());
+            schedule_revert(app.clone(), my_epoch, DONE_REVERT_MS);
+        }
         // Everything else — plain white logo, no animation. The pill handles status.
         _ => {
             set_icon(app, IMG_WHITE.clone());
