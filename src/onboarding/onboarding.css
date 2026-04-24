@@ -30,7 +30,7 @@
 }
 
 .ob-logo {
-  width: 36px;
+  width: 46px;   /* 28:22 viewBox × (36px height) = 45.8 → 46 */
   height: 36px;
   flex-shrink: 0;
   color: #ffffff;

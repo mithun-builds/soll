@@ -29,16 +29,16 @@ export function SettingsApp() {
     <div className="shell">
       <aside className="sidebar">
         <div className="sidebar-brand">
-          <svg className="sidebar-logo" viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg">
-            <rect x="0.5"  y="9"   width="2"   height="4"  rx="1"    fill="currentColor" opacity="0.9"/>
-            <rect x="3.5"  y="7"   width="2"   height="8"  rx="1"    fill="currentColor" opacity="0.9"/>
-            <rect x="6.5"  y="3.5" width="2.5" height="15" rx="1.25" fill="currentColor" opacity="0.9"/>
-            <rect x="14"   y="4.5" width="2.5" height="13" rx="1.25" fill="currentColor" opacity="0.9"/>
-            <rect x="17.5" y="7"   width="2"   height="8"  rx="1"    fill="currentColor" opacity="0.9"/>
-            <rect x="20.5" y="9"   width="1.5" height="4"  rx="0.75" fill="currentColor" opacity="0.9"/>
-            <rect x="9.5"  y="2.5" width="4"   height="1.5"          fill="#fde047"/>
-            <rect x="10.75" y="2.5" width="1.5" height="17"          fill="#fde047"/>
-            <rect x="9.5"  y="18"  width="4"   height="1.5"          fill="#fde047"/>
+          <svg className="sidebar-logo" viewBox="0 0 28 22" xmlns="http://www.w3.org/2000/svg">
+            <rect x="0.5"  y="9"   width="2.5" height="4"  rx="1.25" fill="currentColor" opacity="0.9"/>
+            <rect x="4"    y="7"   width="2.5" height="8"  rx="1.25" fill="currentColor" opacity="0.9"/>
+            <rect x="7.5"  y="3.5" width="3"   height="15" rx="1.5"  fill="currentColor" opacity="0.9"/>
+            <rect x="17.5" y="4.5" width="3"   height="13" rx="1.5"  fill="currentColor" opacity="0.9"/>
+            <rect x="21.5" y="7"   width="2.5" height="8"  rx="1.25" fill="currentColor" opacity="0.9"/>
+            <rect x="25"   y="9"   width="2.5" height="4"  rx="1.25" fill="currentColor" opacity="0.9"/>
+            <rect x="11.5" y="2.5" width="5"   height="1.5"          fill="#fde047"/>
+            <rect x="13.25" y="2.5" width="1.5" height="17"          fill="#fde047"/>
+            <rect x="11.5" y="18"  width="5"   height="1.5"          fill="#fde047"/>
           </svg>
           <div className="sidebar-title">Soll</div>
         </div>
