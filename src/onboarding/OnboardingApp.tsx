@@ -338,17 +338,16 @@ export function OnboardingApp() {
       {/* ── Footer ───────────────────────────────────────────────── */}
       <div className="ob-footer">
         <div className="ob-footer-left">
-          {allRequiredDone && !mock ? (
-            <span>🎉 All set — Soll is ready to use.</span>
-          ) : (
-            <button
-              type="button"
-              className="ob-simulate-btn"
-              onClick={() => setMock((m) => !m)}
-            >
-              {mock ? "← Back to live status" : "Preview as new user"}
-            </button>
+          {allRequiredDone && !mock && (
+            <span className="ob-footer-done">🎉 All set — Soll is ready to use.</span>
           )}
+          <button
+            type="button"
+            className="ob-simulate-btn"
+            onClick={() => setMock((m) => !m)}
+          >
+            {mock ? "← Back to live status" : "Preview as new user"}
+          </button>
         </div>
         <button
           type="button"
