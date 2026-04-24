@@ -30,7 +30,7 @@ interface StepDef {
   extra?: React.ReactNode;
 }
 
-// ── Mock status (simulate a brand-new user) ────────────────────────────────
+// ── Mock (simulate brand-new user) ────────────────────────────────────────
 
 const MOCK_STATUS: OnboardingStatus = {
   model_cached: false,
@@ -46,7 +46,7 @@ const MOCK_STATUS: OnboardingStatus = {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-function cssState(state: StepState): string {
+function cssState(state: StepState) {
   return state === "in_progress" ? "in-progress" : state;
 }
 
@@ -91,50 +91,15 @@ function OllamaInstructions() {
   );
 }
 
-function StepCard({ step }: { step: StepDef }) {
-  const modifier = cssState(step.state);
-  return (
-    <div className={`ob-card ob-card--${modifier}`}>
-      <div className="ob-card-header">
-        <span className="ob-card-icon">{step.icon}</span>
-        <span className="ob-card-title">{step.title}</span>
-        {step.optional && <span className="ob-optional-tag">Optional</span>}
-        <StatusBadge state={step.state} />
-      </div>
-      <div className="ob-card-body">
-        <p className="ob-card-desc">{step.desc}</p>
-        {step.actionLabel && step.onAction && (
-          <button
-            type="button"
-            className="secondary ob-action-btn"
-            onClick={step.onAction}
-          >
-            {step.actionLabel}
-          </button>
-        )}
-        {step.extra}
-      </div>
-    </div>
-  );
-}
-
 // ── Step derivation ────────────────────────────────────────────────────────
 
 function deriveSteps(s: OnboardingStatus): StepDef[] {
-  // Step 1: Whisper model
   const modelState: StepState = s.model_cached
     ? "done"
     : s.model_downloading
     ? "in_progress"
     : "pending";
 
-  const modelDesc = s.model_downloading
-    ? `Downloading speech model…${
-        s.model_download_pct != null ? ` ${s.model_download_pct}%` : ""
-      }`
-    : "Soll needs a local Whisper model to transcribe your voice. A one-time download that runs entirely on your Mac — nothing leaves your device.";
-
-  // Step 2: Microphone
   const micState: StepState =
     s.mic_permission === "granted"
       ? "done"
@@ -142,28 +107,9 @@ function deriveSteps(s: OnboardingStatus): StepDef[] {
       ? "denied"
       : "pending";
 
-  const micDesc =
-    micState === "denied"
-      ? "Microphone access was denied. Open System Settings and allow Soll to use the microphone."
-      : "Soll needs microphone access to record your voice when you hold the shortcut.";
-
-  const micAction =
-    micState === "denied"
-      ? "Open Mic Settings"
-      : micState === "pending"
-      ? "Grant Microphone Access"
-      : undefined;
-
-  // Step 3: Accessibility
   const axState: StepState = s.accessibility ? "done" : "pending";
-
-  // Step 4: Ollama (optional)
   const ollamaState: StepState = s.ollama_running ? "done" : "pending";
-
-  // Step 5: First dictation
   const dictState: StepState = s.has_dictated ? "done" : "pending";
-
-  // Step 6: Skills (optional)
   const skillsState: StepState = s.has_skills ? "done" : "pending";
 
   return [
@@ -172,7 +118,9 @@ function deriveSteps(s: OnboardingStatus): StepDef[] {
       icon: "◈",
       title: "Speech recognition model",
       state: modelState,
-      desc: modelDesc,
+      desc: s.model_downloading
+        ? `Downloading…${s.model_download_pct != null ? ` ${s.model_download_pct}%` : ""}`
+        : "Soll needs a local Whisper model to transcribe your voice. A one-time download that runs entirely on your Mac — nothing leaves your device.",
       actionLabel: modelState === "pending" ? "Download Model" : undefined,
       onAction:
         modelState === "pending"
@@ -189,10 +137,18 @@ function deriveSteps(s: OnboardingStatus): StepDef[] {
       icon: "🎤",
       title: "Microphone access",
       state: micState,
-      desc: micDesc,
-      actionLabel: micAction,
+      desc:
+        micState === "denied"
+          ? "Microphone access was denied. Open System Settings and allow Soll to use the microphone."
+          : "Soll needs microphone access to record your voice when you hold the shortcut.",
+      actionLabel:
+        micState === "denied"
+          ? "Open Mic Settings"
+          : micState === "pending"
+          ? "Grant Microphone Access"
+          : undefined,
       onAction:
-        micAction != null
+        micState !== "done"
           ? () => invoke("open_privacy_settings", { section: "Privacy_Microphone" })
           : undefined,
     },
@@ -214,7 +170,7 @@ function deriveSteps(s: OnboardingStatus): StepDef[] {
       title: "Ollama — AI cleanup",
       optional: true,
       state: ollamaState,
-      desc: "Ollama runs local AI to polish your dictation — fixing grammar, punctuation, and capitalisation. Optional but great for longer dictations.",
+      desc: "Ollama runs a local AI model to polish your dictation — fixing grammar, punctuation, and capitalisation. Optional, but great for longer dictations.",
       extra: ollamaState !== "done" ? <OllamaInstructions /> : undefined,
     },
     {
@@ -240,11 +196,94 @@ function deriveSteps(s: OnboardingStatus): StepDef[] {
   ];
 }
 
+// ── Dot progress ───────────────────────────────────────────────────────────
+
+function StepDots({
+  steps,
+  current,
+  onDotClick,
+}: {
+  steps: StepDef[];
+  current: number;
+  onDotClick: (i: number) => void;
+}) {
+  return (
+    <div className="ob-dots">
+      {steps.map((s, i) => {
+        const cls =
+          i === current
+            ? "ob-dot ob-dot--active"
+            : s.state === "done"
+            ? "ob-dot ob-dot--done"
+            : "ob-dot";
+        return (
+          <button
+            key={s.id}
+            type="button"
+            className={cls}
+            onClick={() => onDotClick(i)}
+            title={s.title}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Wizard step display ────────────────────────────────────────────────────
+
+function WizardStep({
+  step,
+  index,
+  total,
+  animDir,
+}: {
+  step: StepDef;
+  index: number;
+  total: number;
+  animDir: "right" | "left";
+}) {
+  return (
+    <div className={`ob-slide ob-slide--enter-${animDir}`}>
+      <div className="ob-slide-inner">
+        <div className="ob-step-icon">{step.icon}</div>
+
+        <div className="ob-step-meta">
+          <span className="ob-step-num">Step {index + 1} of {total}</span>
+          {step.optional && <span className="ob-optional-tag">Optional</span>}
+          <StatusBadge state={step.state} />
+        </div>
+
+        <div className="ob-step-title">{step.title}</div>
+
+        <p className="ob-step-desc">{step.desc}</p>
+
+        {step.actionLabel && step.onAction && (
+          <button
+            type="button"
+            className="secondary ob-step-action-btn"
+            onClick={step.onAction}
+          >
+            {step.actionLabel}
+          </button>
+        )}
+
+        {step.extra && (
+          <div className="ob-step-extra">{step.extra}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ─────────────────────────────────────────────────────────
 
 export function OnboardingApp() {
   const [status, setStatus] = useState<OnboardingStatus | null>(null);
   const [mock, setMock] = useState(false);
+  const [currentStep, setCurrentStep] = useState(0);
+  const [animDir, setAnimDir] = useState<"right" | "left">("right");
+  const [animKey, setAnimKey] = useState(0);
   const polling = useRef(false);
 
   async function fetchStatus() {
@@ -266,6 +305,13 @@ export function OnboardingApp() {
     return () => clearInterval(id);
   }, []);
 
+  function goTo(next: number) {
+    if (next === currentStep) return;
+    setAnimDir(next > currentStep ? "right" : "left");
+    setCurrentStep(next);
+    setAnimKey((k) => k + 1);
+  }
+
   async function dismiss() {
     try {
       await invoke("onboarding_dismiss");
@@ -284,22 +330,22 @@ export function OnboardingApp() {
 
   const displayed = mock ? MOCK_STATUS : status;
   const steps = deriveSteps(displayed);
-  const totalSteps = steps.length; // 6
-  const doneSteps = steps.filter((s) => s.state === "done").length;
+  const totalSteps = steps.length;
+  const doneCount = steps.filter((s) => s.state === "done").length;
   const requiredDone = steps.filter((s) => !s.optional && s.state === "done").length;
   const requiredTotal = steps.filter((s) => !s.optional).length;
   const allRequiredDone = requiredDone === requiredTotal;
-  const pct = Math.round((doneSteps / totalSteps) * 100);
+  const pct = Math.round((doneCount / totalSteps) * 100);
+
+  const isFirst = currentStep === 0;
+  const isLast = currentStep === totalSteps - 1;
+  const showDone = isLast && allRequiredDone && !mock;
 
   return (
     <div className="ob-shell">
-      {/* ── Header ──────────────────────────────────────────────────── */}
+      {/* ── Header ──────────────────────────────────────────────── */}
       <div className="ob-header">
-        <svg
-          className="ob-logo"
-          viewBox="0 0 22 22"
-          xmlns="http://www.w3.org/2000/svg"
-        >
+        <svg className="ob-logo" viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg">
           <rect x="0.5"   y="9"   width="2"   height="4"  rx="1"    fill="currentColor" opacity="0.9"/>
           <rect x="3.5"   y="7"   width="2"   height="8"  rx="1"    fill="currentColor" opacity="0.9"/>
           <rect x="6.5"   y="3.5" width="2.5" height="15" rx="1.25" fill="currentColor" opacity="0.9"/>
@@ -318,44 +364,62 @@ export function OnboardingApp() {
         </div>
       </div>
 
-      {/* ── Progress ─────────────────────────────────────────────── */}
+      {/* ── Progress bar ────────────────────────────────────────── */}
       <div className="ob-progress-wrap">
         <div className="ob-progress-bar">
           <div className="ob-progress-fill" style={{ width: `${pct}%` }} />
         </div>
-        <span className="ob-progress-label">
-          {doneSteps}/{totalSteps} steps
-        </span>
+        <span className="ob-progress-label">{doneCount}/{totalSteps} steps</span>
       </div>
 
-      {/* ── Step cards ───────────────────────────────────────────── */}
-      <div className="ob-steps">
-        {steps.map((step) => (
-          <StepCard key={step.id} step={step} />
-        ))}
-      </div>
+      {/* ── Wizard slide ─────────────────────────────────────────── */}
+      <WizardStep
+        key={animKey}
+        step={steps[currentStep]}
+        index={currentStep}
+        total={totalSteps}
+        animDir={animDir}
+      />
 
-      {/* ── Footer ───────────────────────────────────────────────── */}
-      <div className="ob-footer">
-        <div className="ob-footer-left">
-          {allRequiredDone && !mock && (
-            <span className="ob-footer-done">🎉 All set — Soll is ready to use.</span>
-          )}
+      {/* ── Navigation ───────────────────────────────────────────── */}
+      <div className="ob-nav">
+        <button
+          type="button"
+          className="ob-nav-btn"
+          onClick={() => goTo(currentStep - 1)}
+          disabled={isFirst}
+        >
+          ← Back
+        </button>
+
+        <div className="ob-nav-center">
+          <StepDots steps={steps} current={currentStep} onDotClick={goTo} />
           <button
             type="button"
             className="ob-simulate-btn"
             onClick={() => setMock((m) => !m)}
           >
-            {mock ? "← Back to live status" : "Preview as new user"}
+            {mock ? "← Live status" : "Preview as new user"}
           </button>
         </div>
-        <button
-          type="button"
-          className={`${allRequiredDone && !mock ? "primary" : "secondary"} ob-done-btn`}
-          onClick={() => void dismiss()}
-        >
-          {allRequiredDone && !mock ? "All Done — Close" : "Close"}
-        </button>
+
+        {isLast ? (
+          <button
+            type="button"
+            className={`ob-nav-btn ob-nav-btn--finish ${showDone ? "ob-nav-btn--primary" : ""}`}
+            onClick={() => void dismiss()}
+          >
+            {showDone ? "All Done ✓" : "Close"}
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="ob-nav-btn ob-nav-btn--next"
+            onClick={() => goTo(currentStep + 1)}
+          >
+            Next →
+          </button>
+        )}
       </div>
     </div>
   );
