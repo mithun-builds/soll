@@ -1,4 +1,4 @@
-//! Benchmark harness for the Svara dictation pipeline.
+//! Benchmark harness for the Soll dictation pipeline.
 //!
 //! Reads a WAV file (any sample rate / channels — we resample to 16 kHz mono),
 //! runs the production `Transcriber` and `OllamaClient` N iterations, and
@@ -23,10 +23,10 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use svara_lib::cleanup::OllamaClient;
-use svara_lib::metal::ensure_metal_resources;
-use svara_lib::model::default_model_path_standalone;
-use svara_lib::transcribe::Transcriber;
+use soll_lib::cleanup::OllamaClient;
+use soll_lib::metal::ensure_metal_resources;
+use soll_lib::model::default_model_path_standalone;
+use soll_lib::transcribe::Transcriber;
 
 // NOTE: the bench deliberately uses the standalone path resolver (base.en)
 // rather than the AppHandle-based per-model downloader used by the live

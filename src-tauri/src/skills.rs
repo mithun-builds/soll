@@ -1,38 +1,37 @@
-//! User-extensible skills system. Each skill is a markdown file.
+//! User-extensible skills system. Each skill is a markdown file with
+//! four sections — no hidden features, no surprises.
 //!
 //! ## Authoring a skill
 //!
-//! ### `## Intent` — plain English, preferred
+//! ### `## Name` — required, the skill id
 //!
-//!   Describe in one or two sentences when the skill should activate.
-//!   Add an optional `Extract:` line to name the variables the LLM should
-//!   pull from the utterance (example):
+//!   A single line. Becomes the filename and the key used to look up the
+//!   skill internally. Short and URL-safe (lowercase, digits, hyphens).
 //!
-//!   `Extract: recipient (the person's name), body (what they want to say)`
+//! ### `## Description` — one-line UI label
 //!
-//!   At runtime a fast LLM call reads all skill intents and decides which
-//!   one (if any) matches what the user said.
+//!   Shown in Settings under the skill's row.
 //!
-//! ### `## System Prompt` — sent to Ollama
+//! ### `## Triggers` — required, activation phrases
 //!
-//!   Use `[var]` to insert extracted values:
-//!     [body]      — the utterance (whole or extracted)
-//!     [recipient] — any variable named in the Extract line
+//!   Bulleted list of plain-English phrases compiled to regex. The first
+//!   trigger that matches the utterance wins. Use `<name>` placeholders
+//!   to capture variables the instructions/snippet can reference (the
+//!   last placeholder in a trigger is automatically greedy).
 //!
-//! ### `## Output Template` — wraps the AI response
+//! ### `## Instructions` *or* `## Phrase` — required, pick exactly one
 //!
-//!   Special variables always available:
-//!     [result]    — what Ollama returned
+//!   **`## Instructions`** — AI skill. The whole section text is sent to
+//!   Ollama; whatever it returns is the final pasted output.
+//!
+//!   **`## Phrase`** — literal paste. The section text is pasted verbatim
+//!   after variable interpolation. No LLM call, ~0 ms. Great for canned
+//!   replies like meeting links, signatures, boilerplate responses.
+//!
+//!   Either section can reference:
+//!     [body]      — the utterance (or the captured `<body>` variable)
 //!     [name]      — the user's name from Settings
-//!     [recipient] — (or any extracted variable)
-//!
-//!   Defaults to `[result]` if the section is absent.
-//!
-//! ### `## Triggers` — legacy fast-path (optional)
-//!
-//!   Bulleted list of plain-English phrases compiled to regex. Skills
-//!   with triggers are matched instantly without an LLM call. Useful for
-//!   power users who always say exactly the same phrase.
+//!     [recipient] — any variable named in a trigger's `<placeholder>`
 
 use anyhow::{anyhow, Context, Result};
 use regex::Regex;
@@ -42,44 +41,35 @@ use std::collections::HashMap;
 pub struct Skill {
     pub name: String,
     pub description: String,
-    /// Legacy regex-backed trigger patterns from `## Triggers`. Empty for
-    /// intent-based skills.
+    /// Regex-backed trigger patterns from `## Triggers`. At least one is
+    /// required — triggers are the only activation path.
     pub triggers: Vec<TriggerPattern>,
-    /// Plain-English activation description from `## Intent`. The LLM
-    /// classifier reads this to decide which skill to route to.
-    pub intent: Option<String>,
-    /// Variable names the LLM should extract, parsed from the `Extract:`
-    /// line in `## Intent`. E.g. `["recipient", "body"]`.
-    pub extract_vars: Vec<String>,
     pub native: Option<String>,
-    /// Plain-English instructions from `## Instructions` (new-style skill).
-    /// When present, the system auto-appends the user's name and transcription
-    /// before sending to Ollama; the response is pasted directly.
-    pub instructions: Option<String>,
-    /// Legacy: explicit system prompt with `[var]` substitutions.
-    pub system_prompt: String,
-    /// Legacy: output template assembled after the Ollama call.
-    pub output_template: String,
-    pub source: SkillSource,
+    /// What the skill does when it fires — either send text to Ollama
+    /// (`## Instructions`) or paste a literal phrase (`## Phrase`).
+    pub kind: SkillKind,
     /// Raw markdown this skill was parsed from. Served to the editor UI.
     pub markdown_source: String,
 }
 
-/// Built-in skill markdown, embedded at compile time.
-pub const BUILTIN_SOURCES: &[(&str, &str)] = &[
-    ("email", include_str!("../skills/email.md")),
-    ("prompt-better", include_str!("../skills/prompt_better.md")),
-];
-
-pub fn builtin_source(name: &str) -> Option<&'static str> {
-    BUILTIN_SOURCES
-        .iter()
-        .find(|(n, _)| *n == name)
-        .map(|(_, s)| *s)
+#[derive(Debug, Clone)]
+pub enum SkillKind {
+    /// AI skill: contents of `## Instructions` sent to Ollama; model output
+    /// is pasted as-is.
+    Ai { instructions: String },
+    /// Phrase: contents of `## Phrase` are pasted verbatim after variable
+    /// interpolation. No LLM call — ideal for canned replies.
+    Phrase { text: String },
 }
 
-pub fn builtin_names() -> impl Iterator<Item = &'static str> {
-    BUILTIN_SOURCES.iter().map(|(n, _)| *n)
+impl SkillKind {
+    /// Machine-readable label — "ai" or "phrase" — for the UI.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ai { .. } => "ai",
+            Self::Phrase { .. } => "phrase",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -87,23 +77,6 @@ pub struct TriggerPattern {
     pub template: String,
     regex: Regex,
     capture_names: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SkillSource {
-    /// Ships with the app. Rendered as "default" in the UI.
-    Builtin,
-    /// Saved by the user into the skills directory. Rendered as "custom".
-    User,
-}
-
-impl SkillSource {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Builtin => "default",
-            Self::User => "custom",
-        }
-    }
 }
 
 impl TriggerPattern {
@@ -209,81 +182,91 @@ impl TriggerPattern {
 
 impl Skill {
     pub fn from_markdown(md: &str) -> Result<Self> {
-        let (fm, body) = split_frontmatter(md)?;
+        let (fm, body) = split_frontmatter(md);
         let meta = parse_frontmatter(fm);
 
-        let name = meta
-            .get("name")
-            .cloned()
-            .ok_or_else(|| anyhow!("skill missing `name`"))?;
-        let description = meta.get("description").cloned().unwrap_or_default();
+        // `## Name` is the preferred place for the skill id. YAML frontmatter
+        // (`name:`) is still accepted for back-compat with older skills.
+        let name = section_first_line(body, "Name")
+            .or_else(|| meta.get("name").cloned())
+            .ok_or_else(|| anyhow!("skill missing `## Name` section"))?;
+        validate_name(&name)?;
+
+        // `## Description` is preferred; frontmatter `description:` still works.
+        let description = section_first_line(body, "Description")
+            .or_else(|| meta.get("description").cloned())
+            .unwrap_or_default();
+
         let native = meta.get("native").cloned();
 
-        // `## Triggers` — optional, legacy pattern-matching
-        let triggers: Vec<TriggerPattern> = match extract_section(body, "Triggers") {
-            Ok(section) => {
-                let templates: Vec<String> = section
-                    .lines()
-                    .filter_map(|l| {
-                        let line = l.trim();
-                        let line = line
-                            .strip_prefix('-')
-                            .or_else(|| line.strip_prefix('*'))
-                            .unwrap_or(line)
-                            .trim();
-                        if line.is_empty() { None } else { Some(line.to_string()) }
-                    })
-                    .collect();
-                if templates.is_empty() {
+        // `## Triggers` — required. Bulleted list compiled to regex.
+        let section = extract_section(body, "Triggers")
+            .with_context(|| format!("skill `{name}` needs `## Triggers`"))?;
+        let templates: Vec<String> = section
+            .lines()
+            .filter_map(|l| {
+                let line = l.trim();
+                let line = line
+                    .strip_prefix('-')
+                    .or_else(|| line.strip_prefix('*'))
+                    .unwrap_or(line)
+                    .trim();
+                if line.is_empty() { None } else { Some(line.to_string()) }
+            })
+            .collect();
+        if templates.is_empty() {
+            return Err(anyhow!(
+                "skill `{name}` has an empty `## Triggers` section — \
+                 add at least one trigger phrase"
+            ));
+        }
+        let triggers: Vec<TriggerPattern> = templates
+            .iter()
+            .map(|t| TriggerPattern::compile(t))
+            .collect::<Result<Vec<_>>>()
+            .with_context(|| format!("skill `{name}` trigger compile failed"))?;
+
+        // Exactly one of `## Instructions` (AI skill) or `## Phrase`
+        // (literal paste) — not both, not neither.
+        let instructions = extract_section(body, "Instructions").ok();
+        let phrase = extract_section(body, "Phrase").ok();
+        let kind = match (instructions, phrase) {
+            (Some(i), None) => {
+                if i.trim().is_empty() {
                     return Err(anyhow!(
-                        "skill `{name}` has an empty `## Triggers` section — \
-                         add trigger lines or remove the section"
+                        "skill `{name}` has an empty `## Instructions` section"
                     ));
                 }
-                templates
-                    .iter()
-                    .map(|t| TriggerPattern::compile(t))
-                    .collect::<Result<Vec<_>>>()
-                    .with_context(|| format!("skill `{name}` trigger compile failed"))?
+                SkillKind::Ai { instructions: i }
             }
-            Err(_) => Vec::new(), // absent is fine
+            (None, Some(p)) => {
+                if p.trim().is_empty() {
+                    return Err(anyhow!(
+                        "skill `{name}` has an empty `## Phrase` section"
+                    ));
+                }
+                SkillKind::Phrase { text: p }
+            }
+            (Some(_), Some(_)) => {
+                return Err(anyhow!(
+                    "skill `{name}` has both `## Instructions` and `## Phrase` — \
+                     pick one (AI skill or phrase, not both)"
+                ));
+            }
+            (None, None) => {
+                return Err(anyhow!(
+                    "skill `{name}` needs `## Instructions` (AI skill) or \
+                     `## Phrase` (literal paste)"
+                ));
+            }
         };
-
-        // `## Intent` — plain-English description for LLM classification
-        let (intent, extract_vars) = match extract_section(body, "Intent") {
-            Ok(section) => parse_intent_section(&section),
-            Err(_) => (None, Vec::new()),
-        };
-
-        // `## Instructions` — new-style: plain English, no variable syntax.
-        // The system auto-appends user name + transcription before calling Ollama.
-        let instructions = extract_section(body, "Instructions").ok();
-
-        // `## System Prompt` — legacy. Required only when `## Instructions` is absent.
-        let system_prompt = if instructions.is_none() {
-            extract_section(body, "System Prompt")
-                .with_context(|| format!(
-                    "skill `{name}` needs either `## Instructions` or `## System Prompt`"
-                ))?
-        } else {
-            extract_section(body, "System Prompt").unwrap_or_default()
-        };
-
-        // `## Output Template` — legacy. Defaults to bare [result] when absent.
-        let output_template =
-            extract_section(body, "Output Template").unwrap_or_else(|_| "[result]".into());
 
         Ok(Skill {
             name,
             description,
             triggers,
-            intent,
-            extract_vars,
             native,
-            instructions,
-            system_prompt,
-            output_template,
-            source: SkillSource::Builtin,
+            kind,
             markdown_source: md.to_string(),
         })
     }
@@ -308,105 +291,45 @@ impl Skill {
     }
 }
 
-/// Load built-in skills from embedded `include_str!` sources.
-/// Used in tests and as a fallback when the resource dir is unavailable.
-pub fn builtin() -> Vec<Skill> {
-    let mut out = Vec::new();
-    for (_, md) in BUILTIN_SOURCES {
-        match Skill::from_markdown(md) {
-            Ok(s) => out.push(s),
-            Err(e) => log::error!("built-in skill parse failed: {e:?}"),
-        }
+/// Load every skill found in `user_dir`. Returns skills in stable
+/// alphabetical order (so the Settings UI has a predictable listing).
+/// Individual file failures are logged and skipped — one broken skill
+/// never takes down the others.
+pub fn load_all(user_dir: Option<&std::path::Path>) -> Vec<Skill> {
+    let Some(dir) = user_dir else { return Vec::new() };
+    if !dir.exists() {
+        return Vec::new();
     }
-    out
-}
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => {
+            log::error!("read_dir({:?}): {e:?}", dir.display());
+            return Vec::new();
+        }
+    };
 
-/// Load built-in skills from a directory on disk (the app resource bundle).
-/// Falls back to the embedded `include_str!` version for any file that is
-/// missing or unparseable, so dev/test always work.
-pub fn builtin_from_dir(dir: &std::path::Path) -> Vec<Skill> {
-    let mut out = Vec::new();
-    for (name, fallback_md) in BUILTIN_SOURCES {
-        let path = dir.join(format!("{name}.md"));
+    let mut by_name: std::collections::BTreeMap<String, Skill> = std::collections::BTreeMap::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.extension().map(|s| s == "md").unwrap_or(false) {
+            continue;
+        }
         let md = match std::fs::read_to_string(&path) {
             Ok(s) => s,
-            Err(_) => {
-                log::warn!(
-                    "built-in skill not found at {:?}, using embedded fallback",
-                    path
-                );
-                fallback_md.to_string()
+            Err(e) => {
+                log::error!("read {:?}: {e:?}", path.display());
+                continue;
             }
         };
         match Skill::from_markdown(&md) {
-            Ok(s) => out.push(s),
-            Err(e) => log::error!("built-in skill {:?} parse failed: {e:?}", path),
-        }
-    }
-    out
-}
-
-/// Load all skills. `builtin_dir` is the resource-bundle skills folder
-/// (read from disk at runtime so no recompile is needed after edits).
-/// `user_dir` is the user's override/custom skills folder.
-pub fn load_all(
-    builtin_dir: Option<&std::path::Path>,
-    user_dir: Option<&std::path::Path>,
-) -> Vec<Skill> {
-    let mut by_name: std::collections::BTreeMap<String, Skill> = std::collections::BTreeMap::new();
-
-    let builtins = match builtin_dir {
-        Some(dir) if dir.exists() => builtin_from_dir(dir),
-        _ => builtin(),
-    };
-    for s in &builtins {
-        by_name.insert(s.name.clone(), s.clone());
-    }
-
-    if let Some(dir) = user_dir {
-        if dir.exists() {
-            match std::fs::read_dir(dir) {
-                Ok(entries) => {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.extension().map(|s| s == "md").unwrap_or(false) {
-                            match std::fs::read_to_string(&path) {
-                                Ok(md) => match Skill::from_markdown(&md) {
-                                    Ok(mut s) => {
-                                        s.source = SkillSource::User;
-                                        log::info!(
-                                            "loaded user skill: {} (from {})",
-                                            s.name,
-                                            path.display()
-                                        );
-                                        by_name.insert(s.name.clone(), s);
-                                    }
-                                    Err(e) => {
-                                        log::error!("user skill {:?}: {e:?}", path.display())
-                                    }
-                                },
-                                Err(e) => log::error!("read {:?}: {e:?}", path.display()),
-                            }
-                        }
-                    }
-                }
-                Err(e) => log::error!("read_dir({:?}): {e:?}", dir.display()),
+            Ok(s) => {
+                log::info!("loaded skill: {} (from {})", s.name, path.display());
+                by_name.insert(s.name.clone(), s);
             }
+            Err(e) => log::error!("skill {:?}: {e:?}", path.display()),
         }
     }
-
-    // Emit built-ins first (stable order), then user-only skills alphabetically.
-    let builtin_names: Vec<String> = builtins.into_iter().map(|s| s.name).collect();
-    let mut out: Vec<Skill> = Vec::with_capacity(by_name.len());
-    for n in &builtin_names {
-        if let Some(s) = by_name.remove(n) {
-            out.push(s);
-        }
-    }
-    for (_, s) in by_name {
-        out.push(s);
-    }
-    out
+    by_name.into_values().collect()
 }
 
 /// Replace `[var]`, `<var>`, and `{{var}}` placeholders with values from `vars`.
@@ -453,49 +376,6 @@ pub fn match_skill<'a>(
     None
 }
 
-// ── intent parsing ─────────────────────────────────────────────────────────
-
-/// Parse the `## Intent` section body into (description, extract_vars).
-///
-/// ```text
-/// The user wants to send an email to a specific person.
-/// Extract: recipient (the person's name), body (what they want to say)
-/// ```
-///
-/// Returns the description lines joined as a single string, and the list of
-/// variable names from the `Extract:` line.
-fn parse_intent_section(section: &str) -> (Option<String>, Vec<String>) {
-    let mut desc_lines: Vec<&str> = Vec::new();
-    let mut extract_vars: Vec<String> = Vec::new();
-
-    for line in section.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("Extract:") {
-            // "recipient (the person's name), body (what they want to say)"
-            for part in rest.split(',') {
-                let var_name = part
-                    .trim()
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("")
-                    .to_string();
-                if !var_name.is_empty() {
-                    extract_vars.push(var_name);
-                }
-            }
-        } else if !trimmed.is_empty() {
-            desc_lines.push(trimmed);
-        }
-    }
-
-    let desc = if desc_lines.is_empty() {
-        None
-    } else {
-        Some(desc_lines.join(" "))
-    };
-    (desc, extract_vars)
-}
-
 // ── template internals ─────────────────────────────────────────────────────
 
 enum Token {
@@ -516,15 +396,66 @@ fn placeholder_name(tok: &str) -> Option<&str> {
 
 // ── markdown helpers ───────────────────────────────────────────────────────
 
-fn split_frontmatter(md: &str) -> Result<(&str, &str)> {
-    let md = md.trim_start();
-    let md = md.strip_prefix("---").ok_or_else(|| {
-        anyhow!("skill markdown must start with YAML frontmatter (---)")
-    })?;
-    let (fm, rest) = md
-        .split_once("\n---")
-        .ok_or_else(|| anyhow!("unterminated frontmatter (missing closing ---)"))?;
-    Ok((fm, rest.trim_start_matches('\n')))
+/// Split optional YAML frontmatter from the body. Skills written purely with
+/// `## Name`/`## Description` sections have no frontmatter — in that case
+/// this returns an empty meta slice and the whole document as the body.
+fn split_frontmatter(md: &str) -> (&str, &str) {
+    let trimmed = md.trim_start();
+    let Some(after_open) = trimmed.strip_prefix("---") else {
+        return ("", md);
+    };
+    match after_open.split_once("\n---") {
+        Some((fm, rest)) => (fm, rest.trim_start_matches('\n')),
+        None => {
+            log::warn!("skill markdown has unterminated frontmatter; treating as body");
+            ("", md)
+        }
+    }
+}
+
+/// Validate a skill's name. A name is used as a filename and as a key, so
+/// it must be short and URL/filesystem-safe. Rules:
+///   - non-empty, at most 40 chars
+///   - starts with a lowercase ASCII letter
+///   - remaining chars are lowercase letters, digits, or `-`
+///   - does not end with a hyphen
+pub fn validate_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(anyhow!("name cannot be empty"));
+    }
+    if name.len() > 40 {
+        return Err(anyhow!("name too long (max 40 characters)"));
+    }
+    let mut chars = name.chars();
+    let first = chars.next().unwrap();
+    if !first.is_ascii_lowercase() {
+        return Err(anyhow!(
+            "name must start with a lowercase letter (got `{first}`)"
+        ));
+    }
+    if name.ends_with('-') {
+        return Err(anyhow!("name cannot end with a hyphen"));
+    }
+    for c in name.chars() {
+        if !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+            return Err(anyhow!(
+                "name may only contain lowercase letters, digits, and hyphens (got `{c}`)"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Read a section and return its first non-empty, non-comment line, trimmed.
+/// Used for `## Name` and `## Description` where a single-line value is
+/// expected. Returns `None` when the section is absent or entirely empty.
+fn section_first_line(body: &str, name: &str) -> Option<String> {
+    extract_section(body, name).ok().and_then(|s| {
+        s.lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .map(str::to_string)
+    })
 }
 
 fn parse_frontmatter(fm: &str) -> HashMap<String, String> {
@@ -552,7 +483,16 @@ fn extract_section(body: &str, name: &str) -> Result<String> {
         None => "",
     };
     let end = after_line.find("\n## ").unwrap_or(after_line.len());
-    Ok(after_line[..end].trim().to_string())
+    let raw = &after_line[..end];
+    // Strip comment lines (lines whose first non-whitespace character is `#`).
+    // This allows skills to embed authoring notes inside sections without
+    // affecting runtime behaviour.
+    let filtered: String = raw
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(filtered.trim().to_string())
 }
 
 #[cfg(test)]
@@ -688,11 +628,8 @@ description: A toy
 - debug <body>
 - fix <body>
 
-## System Prompt
+## Instructions
 Debug: [body]
-
-## Output Template
-DEBUG: [result]
 "#;
 
     #[test]
@@ -711,70 +648,178 @@ DEBUG: [result]
         assert_eq!(vars.get("body").unwrap(), "foo");
     }
 
-    const INTENT_SKILL: &str = r#"---
-name: intent-skill
-description: Intent-based skill
----
-
-## Intent
-The user wants to do something specific.
-Extract: topic (the subject), body (what they said)
-
-## System Prompt
-Handle [topic]: [body]
-
-## Output Template
-[result]
-"#;
-
     #[test]
-    fn parses_intent_skill() {
-        let s = Skill::from_markdown(INTENT_SKILL).unwrap();
-        assert!(s.intent.is_some());
-        assert!(s.intent.as_ref().unwrap().contains("something specific"));
-        assert_eq!(s.extract_vars, vec!["topic", "body"]);
-        assert!(s.triggers.is_empty());
-    }
-
-    #[test]
-    fn no_triggers_section_is_ok() {
-        let md = "---\nname: x\n---\n\n## System Prompt\nhi";
-        assert!(Skill::from_markdown(md).is_ok());
+    fn skill_without_triggers_errors() {
+        let md = "---\nname: x\n---\n\n## Instructions\nhi";
+        assert!(Skill::from_markdown(md).is_err());
     }
 
     #[test]
     fn empty_triggers_section_errors() {
-        let md = "---\nname: x\n---\n\n## Triggers\n\n## System Prompt\nhi";
+        let md = "---\nname: x\n---\n\n## Triggers\n\n## Instructions\nhi";
         assert!(Skill::from_markdown(md).is_err());
     }
 
-    // ── built-ins ──────────────────────────────────────────────
-
     #[test]
-    fn builtin_skills_all_parse() {
-        let skills = builtin();
-        assert!(!skills.is_empty());
-        assert!(skills.iter().any(|s| s.name == "email"));
-        assert!(skills.iter().any(|s| s.name == "prompt-better"));
+    fn empty_instructions_section_errors() {
+        let md = "---\nname: x\n---\n\n## Triggers\n- debug <body>\n\n## Instructions\n";
+        assert!(Skill::from_markdown(md).is_err());
     }
 
     #[test]
-    fn builtin_email_uses_structured_template() {
-        let skills = builtin();
-        let email = skills.iter().find(|s| s.name == "email").unwrap();
-        assert!(email.intent.is_some(), "email should have ## Intent");
-        // Email uses legacy structured path — greeting/sign-off assembled
-        // deterministically so the LLM can't hallucinate the structure.
-        assert!(email.output_template.contains("[recipient]"));
-        assert!(email.output_template.contains("[result]"));
-        assert!(email.output_template.contains("[name]"));
+    fn missing_instructions_errors() {
+        let md = "---\nname: x\n---\n\n## Triggers\n- debug <body>";
+        assert!(Skill::from_markdown(md).is_err());
+    }
+
+    // ── Name / Description sections ────────────────────────────
+
+    const MINIMAL_VALID_TAIL: &str =
+        "\n\n## Triggers\n- debug <body>\n\n## Instructions\nhi\n";
+
+    #[test]
+    fn reads_name_from_section() {
+        let md = format!("## Name\nsummarize{MINIMAL_VALID_TAIL}");
+        let s = Skill::from_markdown(&md).unwrap();
+        assert_eq!(s.name, "summarize");
     }
 
     #[test]
-    fn builtin_prompt_better_has_intent_and_instructions() {
-        let skills = builtin();
-        let pb = skills.iter().find(|s| s.name == "prompt-better").unwrap();
-        assert!(pb.intent.is_some(), "prompt-better should have ## Intent");
-        assert!(pb.instructions.is_some(), "prompt-better should have ## Instructions");
+    fn reads_description_from_section() {
+        let md = format!(
+            "## Name\nx\n\n## Description\nTurn rambling into a summary{MINIMAL_VALID_TAIL}"
+        );
+        let s = Skill::from_markdown(&md).unwrap();
+        assert_eq!(s.description, "Turn rambling into a summary");
+    }
+
+    #[test]
+    fn section_name_beats_frontmatter_name() {
+        let md = format!(
+            "---\nname: old-name\n---\n\n## Name\nnew-name{MINIMAL_VALID_TAIL}"
+        );
+        let s = Skill::from_markdown(&md).unwrap();
+        assert_eq!(s.name, "new-name");
+    }
+
+    #[test]
+    fn frontmatter_name_still_works() {
+        let md = format!("---\nname: legacy\n---\n{MINIMAL_VALID_TAIL}");
+        let s = Skill::from_markdown(&md).unwrap();
+        assert_eq!(s.name, "legacy");
+    }
+
+    #[test]
+    fn errors_when_neither_name_source_present() {
+        let md = format!("## Instructions\nhi{MINIMAL_VALID_TAIL}");
+        assert!(Skill::from_markdown(&md).is_err());
+    }
+
+    #[test]
+    fn name_section_strips_comment_lines() {
+        let md = format!(
+            "## Name\n# this is a comment\nreal-name{MINIMAL_VALID_TAIL}"
+        );
+        let s = Skill::from_markdown(&md).unwrap();
+        assert_eq!(s.name, "real-name");
+    }
+
+    #[test]
+    fn no_frontmatter_document_parses() {
+        let md = format!(
+            "## Name\nx\n\n## Description\ny{MINIMAL_VALID_TAIL}"
+        );
+        let s = Skill::from_markdown(&md).unwrap();
+        assert_eq!(s.name, "x");
+        assert_eq!(s.description, "y");
+    }
+
+    // ── Name validation ────────────────────────────────────────
+
+    #[test]
+    fn name_accepts_valid_ids() {
+        assert!(validate_name("email").is_ok());
+        assert!(validate_name("email-me").is_ok());
+        assert!(validate_name("a1b2").is_ok());
+        assert!(validate_name("x").is_ok());
+    }
+
+    #[test]
+    fn name_rejects_empty() {
+        assert!(validate_name("").is_err());
+    }
+
+    #[test]
+    fn name_rejects_uppercase() {
+        assert!(validate_name("Email").is_err());
+        assert!(validate_name("my-SKILL").is_err());
+    }
+
+    #[test]
+    fn name_rejects_spaces_and_symbols() {
+        assert!(validate_name("my skill").is_err());
+        assert!(validate_name("my_skill").is_err());
+        assert!(validate_name("my/skill").is_err());
+        assert!(validate_name("my.skill").is_err());
+    }
+
+    #[test]
+    fn name_rejects_leading_digit_or_hyphen() {
+        assert!(validate_name("1skill").is_err());
+        assert!(validate_name("-skill").is_err());
+    }
+
+    #[test]
+    fn name_rejects_trailing_hyphen() {
+        assert!(validate_name("skill-").is_err());
+    }
+
+    #[test]
+    fn name_rejects_too_long() {
+        assert!(validate_name(&"a".repeat(41)).is_err());
+        assert!(validate_name(&"a".repeat(40)).is_ok());
+    }
+
+    #[test]
+    fn from_markdown_applies_name_validation() {
+        let md = format!("## Name\nMy Skill{MINIMAL_VALID_TAIL}");
+        assert!(
+            Skill::from_markdown(&md).is_err(),
+            "space in name should reject"
+        );
+    }
+
+    // ── load_all ───────────────────────────────────────────────
+
+    #[test]
+    fn load_all_returns_empty_when_dir_absent() {
+        assert!(load_all(None).is_empty());
+        let missing = std::path::PathBuf::from("/tmp/soll-test-missing-dir-xyz");
+        assert!(load_all(Some(&missing)).is_empty());
+    }
+
+    #[test]
+    fn load_all_reads_md_files_and_skips_broken_ones() {
+        let tmp = std::env::temp_dir().join(format!(
+            "soll-skills-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("good.md"),
+            "## Name\ngood\n\n## Description\nd\n\n## Triggers\n- do <body>\n\n## Instructions\nhi [body]\n",
+        )
+        .unwrap();
+        std::fs::write(tmp.join("broken.md"), "not a skill at all").unwrap();
+        std::fs::write(tmp.join("ignored.txt"), "## Name\nx").unwrap();
+
+        let skills = load_all(Some(&tmp));
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "good");
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

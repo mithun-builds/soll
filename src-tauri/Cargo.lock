@@ -4210,6 +4210,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "soll"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "cocoa",
+ "cpal",
+ "dirs 5.0.1",
+ "futures-util",
+ "hound",
+ "log",
+ "objc",
+ "once_cell",
+ "parking_lot",
+ "regex",
+ "reqwest 0.12.28",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-log",
+ "thiserror 1.0.69",
+ "tokio",
+ "whisper-rs",
+]
+
+[[package]]
 name = "soup3"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4301,35 +4330,6 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
-
-[[package]]
-name = "svara"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arboard",
- "cocoa",
- "cpal",
- "dirs 5.0.1",
- "futures-util",
- "hound",
- "log",
- "objc",
- "once_cell",
- "parking_lot",
- "regex",
- "reqwest 0.12.28",
- "rusqlite",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-log",
- "thiserror 1.0.69",
- "tokio",
- "whisper-rs",
-]
 
 [[package]]
 name = "swift-rs"

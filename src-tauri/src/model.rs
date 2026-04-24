@@ -196,7 +196,7 @@ pub fn default_model_path_standalone() -> Option<PathBuf> {
     let data_dir = dirs::data_dir()?;
     Some(
         data_dir
-            .join("com.svara.app")
+            .join("com.soll.app")
             .join("models")
             .join("ggml-base.en.bin"),
     )

@@ -56,7 +56,7 @@ export function DictionaryPane() {
     <>
       <h1>Dictionary</h1>
       <p className="subtle">
-        Names, jargon, and specific terms Svara should always spell correctly.
+        Names, jargon, and specific terms Soll should always spell correctly.
       </p>
       <p className="hint-callout">
         Type each term in the <strong>exact casing</strong> you want pasted.

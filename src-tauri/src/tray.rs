@@ -15,7 +15,7 @@ use tauri::{
 use crate::model::WhisperModel;
 use crate::state::AppState;
 
-const TRAY_ID: &str = "svara-tray";
+const TRAY_ID: &str = "soll-tray";
 const WORKING_BLINK_MS: u64 = 500;
 const TRANSCRIBING_BLINK_MS: u64 = 400;
 const DONE_REVERT_MS: u64 = 900;
@@ -72,12 +72,12 @@ impl TrayState {
 
     fn tooltip(&self) -> &'static str {
         match self {
-            TrayState::Loading => "Svara — loading",
-            TrayState::Idle => "Svara — hold ⌃⇧Space",
-            TrayState::Initializing => "Svara — initializing…",
-            TrayState::Transcribing => "Svara — speak now",
-            TrayState::Processing => "Svara — processing",
-            TrayState::Transcribed => "Svara — transcribed ✓",
+            TrayState::Loading => "Soll — loading",
+            TrayState::Idle => "Soll — hold ⌃⇧Space",
+            TrayState::Initializing => "Soll — initializing…",
+            TrayState::Transcribing => "Soll — speak now",
+            TrayState::Processing => "Soll — processing",
+            TrayState::Transcribed => "Soll — transcribed ✓",
         }
     }
 }
@@ -193,15 +193,15 @@ pub fn update_model_check(current: WhisperModel) {
 }
 
 pub fn open_dictionary_window(app: &AppHandle) {
-    open_window(app, "dictionary", "Svara — Dictionary", 520.0, 680.0);
+    open_window(app, "dictionary", "Soll — Dictionary", 520.0, 680.0);
 }
 
 pub fn open_legend_window(app: &AppHandle) {
-    open_window(app, "legend", "Svara — Status Legend", 460.0, 560.0);
+    open_window(app, "legend", "Soll — Status Legend", 460.0, 560.0);
 }
 
 pub fn open_settings_window(app: &AppHandle) {
-    open_window(app, "settings", "Svara — Settings", 860.0, 640.0);
+    open_window(app, "settings", "Soll — Settings", 860.0, 640.0);
 }
 
 /// Public for commands that need to refresh the tray after model state
@@ -233,7 +233,7 @@ fn build_menu(app: &AppHandle) -> Result<Menu<Wry>> {
     )?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit Svara", true, Some("Cmd+Q"))?;
+    let quit = MenuItem::with_id(app, "quit", "Quit Soll", true, Some("Cmd+Q"))?;
 
     Menu::with_items(
         app,
@@ -377,12 +377,12 @@ fn handle_download_click(app: &AppHandle, model: WhisperModel) {
 
 async fn confirm_download_dialog(model: WhisperModel) -> bool {
     let message = format!(
-        "Download the {} Whisper model?\\n\\nSize: {}. The download runs in the background — Svara keeps working on your current model while it fetches.",
+        "Download the {} Whisper model?\\n\\nSize: {}. The download runs in the background — Soll keeps working on your current model while it fetches.",
         model.display_name(),
         model.size_label()
     );
     let script = format!(
-        "display dialog \"{}\" buttons {{\"Cancel\", \"Download\"}} default button \"Download\" with title \"Svara\"",
+        "display dialog \"{}\" buttons {{\"Cancel\", \"Download\"}} default button \"Download\" with title \"Soll\"",
         message.replace('\\', "\\\\").replace('"', "\\\"")
     );
     let output = tokio::process::Command::new("osascript")

@@ -50,10 +50,10 @@ pub fn run() {
             commands::settings_set,
             commands::skill_list,
             commands::skill_get_source,
-            commands::skill_get_default_source,
             commands::skill_create,
             commands::skill_save,
-            commands::skill_reset,
+            commands::skill_delete,
+            commands::skill_set_enabled,
             commands::models_list,
             commands::model_activate,
             commands::model_download,
@@ -97,6 +97,19 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
+            // One-time data directory migration from com.svara.app → com.soll.app.
+            // Runs on the first launch after the rename, becomes a no-op thereafter.
+            if let Some(base) = dirs::data_dir() {
+                let old = base.join("com.svara.app");
+                let new = base.join("com.soll.app");
+                if old.exists() && !new.exists() {
+                    match std::fs::rename(&old, &new) {
+                        Ok(()) => info!("migrated data dir: com.svara.app → com.soll.app"),
+                        Err(e) => log::warn!("data dir migration failed: {e:?}"),
+                    }
+                }
+            }
+
             let state = Arc::new(AppState::new(app.handle().clone()));
             app.manage(state.clone());
 
@@ -115,11 +128,11 @@ pub fn run() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("error while building Svara")
+        .expect("error while building Soll")
         .run(|_app_handle, event| {
             // Tauri's default is to exit when the last window closes, but
-            // Svara is a tray app — the only legitimate quit path is the
-            // tray's "Quit Svara" menu item (which calls `app.exit(0)` and
+            // Soll is a tray app — the only legitimate quit path is the
+            // tray's "Quit Soll" menu item (which calls `app.exit(0)` and
             // sets `code = Some(0)`). Any other ExitRequested means a window
             // just got closed; keep the app alive.
             if let tauri::RunEvent::ExitRequested { code, api, .. } = event {

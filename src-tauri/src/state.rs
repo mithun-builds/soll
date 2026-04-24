@@ -24,81 +24,6 @@ use crate::tray::{self, TrayState};
 
 static DICTATION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// LLM-based skill router. Sends a short classification prompt to Ollama
-/// listing all intent-based skills, gets back a JSON response with the
-/// skill name and extracted variables.
-///
-/// Returns None on any failure (Ollama down, malformed JSON, unknown skill
-/// name) — the caller falls through to the default cleanup path.
-async fn classify_skill_with_llm(
-    raw: &str,
-    skills: &[Skill],
-    ollama: &OllamaClient,
-) -> Option<(String, std::collections::HashMap<String, String>)> {
-    // Only consider skills that have a plain-English intent description.
-    let intent_skills: Vec<&Skill> = skills.iter().filter(|s| s.intent.is_some()).collect();
-    if intent_skills.is_empty() {
-        return None;
-    }
-
-    // Build a compact list: "- name: description (extract hint if any)"
-    let skill_list = intent_skills
-        .iter()
-        .map(|s| {
-            let intent = s.intent.as_deref().unwrap_or("");
-            format!("- {}: {}", s.name, intent)
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let prompt = format!(
-        "You are a skill router for a voice dictation app.\n\
-         Match the transcription to exactly one skill, or null.\n\
-         \n\
-         Skills:\n{skill_list}\n\
-         \n\
-         Transcription: \"{raw}\"\n\
-         \n\
-         Reply with JSON only — no explanation, no markdown.\n\
-         If a skill matches:\n\
-         {{\"skill\":\"name\",\"vars\":{{\"key\":\"value\"}}}}\n\
-         If nothing matches:\n\
-         {{\"skill\":null}}\n\
-         JSON:"
-    );
-
-    let response = ollama.generate(&prompt, 300).await.ok()?;
-
-    // Extract the JSON object from the response (LLM may add preamble)
-    let json_str = extract_json_object(&response)?;
-    let value: serde_json::Value = serde_json::from_str(json_str).ok()?;
-
-    // skill null → no match
-    let skill_val = value.get("skill")?;
-    if skill_val.is_null() {
-        return None;
-    }
-    let skill_name = skill_val.as_str()?.to_string();
-    if skill_name.is_empty() {
-        return None;
-    }
-
-    // Verify the named skill actually exists
-    intent_skills.iter().find(|s| s.name == skill_name)?;
-
-    let vars: std::collections::HashMap<String, String> = value
-        .get("vars")
-        .and_then(|v| v.as_object())
-        .map(|obj| {
-            obj.iter()
-                .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    Some((skill_name, vars))
-}
-
 /// Strip common LLM preamble sentences that appear before the actual content,
 /// e.g. "Here's the polished email:", "Sure! Here you go:", "Certainly!".
 /// Looks for the first blank line or a sentence-ending preamble marker and
@@ -136,23 +61,58 @@ fn strip_llm_preamble(s: &str) -> String {
     s.to_string()
 }
 
-/// Find the outermost `{...}` in a string, handling nesting.
-fn extract_json_object(s: &str) -> Option<&str> {
-    let start = s.find('{')?;
-    let mut depth = 0i32;
-    for (i, b) in s.as_bytes()[start..].iter().enumerate() {
-        match b {
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(&s[start..start + i + 1]);
+/// Lowercase any "shouty" ALL-CAPS word (3+ consecutive uppercase ASCII
+/// letters). Small local LLMs sometimes preserve or invent emphasis by
+/// shouting a word like "TOMORROW" or "MONDAY"; users rarely want that in a
+/// polished email. Known technical acronyms are preserved. A word that is
+/// at the very start of a sentence is lower-cased then re-capitalised so
+/// "TOMORROW is…" becomes "Tomorrow is…" rather than "tomorrow is…".
+fn normalize_shouty_caps(s: &str) -> String {
+    // Preserve well-known acronyms users actually say (add as needed).
+    const KEEP: &[&str] = &[
+        "API", "URL", "HTTP", "HTTPS", "PDF", "JSON", "HTML", "CSS", "SQL",
+        "USA", "UK", "EU", "NYC", "LA", "SF",
+        "CEO", "CTO", "CFO", "COO", "VP", "HR", "PR",
+        "ASAP", "FYI", "TBD", "TBH", "IMO", "IMHO", "IIRC", "AKA", "ETA",
+        "AI", "ML", "UI", "UX", "OS", "IT",
+    ];
+
+    let re = regex::Regex::new(r"\b[A-Z]{3,}\b").unwrap();
+    let mut out = String::with_capacity(s.len());
+    let mut last = 0usize;
+
+    for m in re.find_iter(s) {
+        out.push_str(&s[last..m.start()]);
+        let word = m.as_str();
+
+        if KEEP.contains(&word) {
+            out.push_str(word);
+        } else {
+            // Sentence-start: previous non-whitespace char is '.', '!' or '?',
+            // or the word is at the very beginning.
+            let before = s[..m.start()].trim_end();
+            let at_sentence_start = before.is_empty()
+                || before.ends_with('.')
+                || before.ends_with('!')
+                || before.ends_with('?')
+                || before.ends_with('\n');
+
+            let lower = word.to_lowercase();
+            if at_sentence_start {
+                let mut chars = lower.chars();
+                if let Some(first) = chars.next() {
+                    out.extend(first.to_uppercase());
+                    out.push_str(chars.as_str());
                 }
+            } else {
+                out.push_str(&lower);
             }
-            _ => {}
         }
+
+        last = m.end();
     }
-    None
+    out.push_str(&s[last..]);
+    out
 }
 
 pub struct AppState {
@@ -188,17 +148,7 @@ impl AppState {
         let model = WhisperModel::from_id(&preferred).unwrap_or(WhisperModel::DEFAULT);
 
         let user_skills_dir = data_dir.join("skills");
-        // Built-in skills are bundled as resources and read from disk at
-        // runtime — no recompile needed after editing skill files.
-        let resource_skills_dir = app
-            .path()
-            .resource_dir()
-            .ok()
-            .map(|d| d.join("skills"));
-        let skills_list = skills::load_all(
-            resource_skills_dir.as_deref(),
-            Some(&user_skills_dir),
-        );
+        let skills_list: Vec<Skill> = skills::load_all(Some(&user_skills_dir));
         log::info!(
             "loaded {} skills: {}",
             skills_list.len(),
@@ -240,9 +190,8 @@ impl AppState {
     }
 
     pub fn reload_skills(&self) {
-        let resource_dir = self.app.path().resource_dir().ok().map(|d| d.join("skills"));
         let dir = self.user_skills_dir().ok();
-        let new = skills::load_all(resource_dir.as_deref(), dir.as_deref());
+        let new: Vec<Skill> = skills::load_all(dir.as_deref());
         log::info!(
             "reloaded {} skills: {}",
             new.len(),
@@ -506,34 +455,20 @@ impl AppState {
 
         // ── Skill routing ────────────────────────────────────────────────────
         //
-        // Phase 1: instant trigger-pattern matching (legacy skills, 0 ms)
-        // Phase 2: LLM intent classification (intent-based skills, ~400 ms)
-        //          — only runs when AI cleanup is enabled (requires Ollama)
+        // Triggers are the only activation path: the first trigger phrase
+        // that matches the utterance wins, instantly (0 ms, no LLM call).
+        // Disabled skills never match even though they stay loaded so their
+        // markdown + edits survive the toggle.
+        let disabled = self.settings.disabled_skills();
 
-        let trigger_match = {
+        let skill_match = {
             let list = self.skills.lock();
-            skills::match_skill(&list, &raw).map(|(s, v)| (s.clone(), v))
-        };
-
-        let skill_match = if trigger_match.is_some() {
-            trigger_match
-        } else if ai_on {
-            let t_classify = Instant::now();
-            let snapshot: Vec<Skill> = self.skills.lock().clone();
-            let result = classify_skill_with_llm(&raw, &snapshot, &self.ollama).await;
-            let classify_ms = t_classify.elapsed().as_millis() as u64;
-            match &result {
-                Some((name, _)) => info!(
-                    "[latency #{n}] skill classify → {name} in {classify_ms}ms"
-                ),
-                None => info!("[latency #{n}] skill classify → no match in {classify_ms}ms"),
-            }
-            result.and_then(|(name, vars)| {
-                let list = self.skills.lock();
-                list.iter().find(|s| s.name == name).map(|s| (s.clone(), vars))
-            })
-        } else {
-            None
+            let enabled: Vec<Skill> = list
+                .iter()
+                .filter(|s| !disabled.contains(&s.name))
+                .cloned()
+                .collect();
+            skills::match_skill(&enabled, &raw).map(|(s, v)| (s.clone(), v))
         };
 
         // ── Skill execution ──────────────────────────────────────────────────
@@ -541,76 +476,40 @@ impl AppState {
         if let Some((skill, mut vars)) = skill_match {
             info!("[latency #{n}] running skill: {}", skill.name);
 
-            let t_ollama = Instant::now();
+            let t_run = Instant::now();
 
-            let final_text = if let Some(instructions) = &skill.instructions {
-                // ── New-style skill: plain-English instructions ──────────────
-                // Build context block. If the classifier extracted structured
-                // vars (e.g. recipient + body for email), use those so the
-                // instructions LLM gets clean inputs, not the raw trigger phrase.
-                if ai_on {
-                    let mut prompt = instructions.clone();
-                    prompt.push_str("\n\n---\n");
-                    if !user_name.is_empty() {
-                        prompt.push_str(&format!("User's name: {user_name}\n"));
-                    }
-                    // Filter out internal vars we injected; keep only what the
-                    // classifier extracted from the utterance.
-                    let extracted: Vec<(&String, &String)> = vars
-                        .iter()
-                        .filter(|(k, _)| k.as_str() != "name")
-                        .collect();
-                    if extracted.is_empty() {
-                        // No structured extraction — send the raw utterance
-                        prompt.push_str(&format!("What they said: {raw}"));
+            // Inject universal vars: [body] = captured `<body>` (if any) or
+            // the raw utterance; [name] = user's name from Settings.
+            if !vars.contains_key("body") {
+                vars.insert("body".into(), raw.clone());
+            }
+            vars.insert("name".into(), user_name.clone());
+
+            let (final_text, run_label, run_ms) = match &skill.kind {
+                skills::SkillKind::Ai { instructions } => {
+                    let prompt = skills::interpolate(instructions, &vars);
+                    let out = if ai_on {
+                        match self.ollama.skill_generate(&prompt).await {
+                            Ok(s) => normalize_shouty_caps(&strip_llm_preamble(&s)),
+                            Err(e) => {
+                                warn!(
+                                    "[latency #{n}] skill {}: ollama error ({e:?}); using body",
+                                    skill.name
+                                );
+                                vars.get("body").cloned().unwrap_or_default()
+                            }
+                        }
                     } else {
-                        // Structured extraction available — send clean fields
-                        for (k, v) in &extracted {
-                            prompt.push_str(&format!("{k}: {v}\n"));
-                        }
-                        let _ = prompt.trim_end_matches('\n');
-                    }
-
-                    match self.ollama.generate(&prompt, 1024).await {
-                        Ok(s) => strip_llm_preamble(&s),
-                        Err(e) => {
-                            warn!(
-                                "[latency #{n}] skill {}: ollama error ({e:?}); using raw",
-                                skill.name
-                            );
-                            raw.clone()
-                        }
-                    }
-                } else {
-                    raw.clone()
+                        vars.get("body").cloned().unwrap_or_default()
+                    };
+                    (out, "ollama", t_run.elapsed().as_millis() as u64)
                 }
-            } else {
-                // ── Legacy skill: [var] interpolation + output template ──────
-                if !vars.contains_key("body") {
-                    vars.insert("body".into(), raw.clone());
+                skills::SkillKind::Phrase { text } => {
+                    // Pure paste — no LLM call, no ollama latency.
+                    let out = skills::interpolate(text, &vars);
+                    (out, "phrase", t_run.elapsed().as_millis() as u64)
                 }
-                vars.insert("name".into(), user_name.clone());
-
-                let system_prompt = skills::interpolate(&skill.system_prompt, &vars);
-                let llm_output = if ai_on {
-                    match self.ollama.generate(&system_prompt, 1024).await {
-                        Ok(s) => strip_llm_preamble(&s),
-                        Err(e) => {
-                            warn!(
-                                "[latency #{n}] skill {}: ollama error ({e:?}); using body",
-                                skill.name
-                            );
-                            vars.get("body").cloned().unwrap_or_default()
-                        }
-                    }
-                } else {
-                    vars.get("body").cloned().unwrap_or_default()
-                };
-                vars.insert("result".into(), llm_output);
-                skills::interpolate(&skill.output_template, &vars)
             };
-
-            let ollama_ms = t_ollama.elapsed().as_millis() as u64;
 
             let with_dict = crate::dictionary::apply_to_text(&final_text, &preserve_terms);
             let trimmed = with_dict.trim().to_string();
@@ -626,8 +525,8 @@ impl AppState {
             let paste_ms = t_paste.elapsed().as_millis() as u64;
             let total_ms = t_release.elapsed().as_millis() as u64;
             info!(
-                "[latency #{n}] skill={} audio={audio_ms}ms whisper={whisper_ms}ms \
-                 ollama={ollama_ms}ms paste={paste_ms}ms total={total_ms}ms text={trimmed:?}",
+                "[latency #{n}] skill={} ({run_label}) audio={audio_ms}ms whisper={whisper_ms}ms \
+                 run={run_ms}ms paste={paste_ms}ms total={total_ms}ms text={trimmed:?}",
                 skill.name
             );
             self.set_tray(TrayState::Transcribed);
@@ -700,5 +599,90 @@ impl AppState {
 
         self.set_tray(TrayState::Transcribed);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_shouty_word_in_middle() {
+        assert_eq!(
+            normalize_shouty_caps("About our meeting TOMORROW."),
+            "About our meeting tomorrow."
+        );
+    }
+
+    #[test]
+    fn normalizes_multiple_shouty_words() {
+        assert_eq!(
+            normalize_shouty_caps("MONDAY or TUESDAY, not FRIDAY"),
+            "Monday or tuesday, not friday"
+        );
+    }
+
+    #[test]
+    fn preserves_technical_acronyms() {
+        assert_eq!(
+            normalize_shouty_caps("Please send the API docs ASAP"),
+            "Please send the API docs ASAP"
+        );
+    }
+
+    #[test]
+    fn capitalizes_shouty_word_at_sentence_start() {
+        assert_eq!(
+            normalize_shouty_caps("TOMORROW is Friday."),
+            "Tomorrow is Friday."
+        );
+    }
+
+    #[test]
+    fn capitalizes_after_sentence_end() {
+        assert_eq!(
+            normalize_shouty_caps("That's fine. MONDAY works."),
+            "That's fine. Monday works."
+        );
+    }
+
+    #[test]
+    fn leaves_two_letter_caps_alone() {
+        // Words shorter than 3 letters aren't matched (things like "US", "AI"
+        // are common and often intentional).
+        assert_eq!(
+            normalize_shouty_caps("I went to NY and DC"),
+            "I went to NY and DC"
+        );
+    }
+
+    #[test]
+    fn leaves_sentence_case_alone() {
+        assert_eq!(
+            normalize_shouty_caps("Hi Nikita, About our meeting tomorrow."),
+            "Hi Nikita, About our meeting tomorrow."
+        );
+    }
+
+    #[test]
+    fn leaves_empty_string_alone() {
+        assert_eq!(normalize_shouty_caps(""), "");
+    }
+
+    #[test]
+    fn handles_shouty_at_start_of_string() {
+        assert_eq!(
+            normalize_shouty_caps("MEETING at 3pm"),
+            "Meeting at 3pm"
+        );
+    }
+
+    #[test]
+    fn preserves_mixed_case_in_surrounding_text() {
+        // Only fully-caps words are touched.
+        assert_eq!(
+            normalize_shouty_caps("Let's meet on Monday, not TUESDAY."),
+            "Let's meet on Monday, not tuesday."
+        );
     }
 }

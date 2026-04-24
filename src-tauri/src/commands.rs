@@ -98,20 +98,20 @@ pub struct SettingsUpdate {
 pub struct SkillInfo {
     pub name: String,
     pub description: String,
-    /// Plain-English activation description from `## Intent`. Present for
-    /// intent-based (new) skills.
-    pub intent: Option<String>,
-    /// Legacy trigger phrases from `## Triggers`. Present for pattern-based
-    /// (old) skills. Empty for intent-based skills.
+    /// Trigger phrases from `## Triggers` — how the skill activates.
     pub triggers: Vec<String>,
-    pub source: String, // "default" | "custom"
     pub native: Option<String>,
-    /// True if a factory/built-in version ships with the app under this name.
-    pub has_builtin_default: bool,
+    /// False when the user has turned this skill off. Disabled skills are
+    /// kept in the list (and preserve their markdown/edits) but never match
+    /// at runtime.
+    pub enabled: bool,
+    /// "ai" (goes through Ollama) or "snippet" (literal paste, no LLM).
+    pub kind: String,
 }
 
 #[tauri::command]
 pub fn skill_list(state: State<'_, Arc<AppState>>) -> Vec<SkillInfo> {
+    let disabled = state.settings.disabled_skills();
     state
         .skills
         .lock()
@@ -119,11 +119,10 @@ pub fn skill_list(state: State<'_, Arc<AppState>>) -> Vec<SkillInfo> {
         .map(|s| SkillInfo {
             name: s.name.clone(),
             description: s.description.clone(),
-            intent: s.intent.clone(),
             triggers: s.trigger_templates(),
-            source: s.source.as_str().to_string(),
             native: s.native.clone(),
-            has_builtin_default: crate::skills::builtin_source(&s.name).is_some(),
+            enabled: !disabled.contains(&s.name),
+            kind: s.kind.as_str().to_string(),
         })
         .collect()
 }
@@ -136,13 +135,6 @@ pub fn skill_get_source(name: String, state: State<'_, Arc<AppState>>) -> Result
         .find(|s| s.name == name)
         .map(|s| s.markdown_source.clone())
         .ok_or_else(|| format!("skill `{name}` not found"))
-}
-
-/// Return the factory/default markdown for a built-in skill, regardless
-/// of whether the user has an override. Used for the "Reset" preview.
-#[tauri::command]
-pub fn skill_get_default_source(name: String) -> Option<String> {
-    crate::skills::builtin_source(&name).map(|s| s.to_string())
 }
 
 /// Create a brand-new skill from arbitrary markdown. Returns the parsed
@@ -160,21 +152,14 @@ pub fn skill_create(
     if path.exists() {
         return Err(format!("skill `{name}` already exists"));
     }
-    // Forbid colliding with a built-in via "new" — user should click Edit
-    // on the built-in to override it instead.
-    if crate::skills::builtin_source(&name).is_some() {
-        return Err(format!(
-            "`{name}` is a built-in skill; edit it from its row instead of creating"
-        ));
-    }
     std::fs::write(&path, &markdown).map_err(|e| e.to_string())?;
     state.reload_skills();
     Ok(name)
 }
 
-/// Save edits to an existing skill. If it's a built-in, this creates a
-/// user override; next reload will prefer the user file. Parses the
-/// markdown first; the name in the markdown must match the target.
+/// Save edits to an existing skill. The name in the markdown may differ
+/// from the target — in that case the file is renamed on disk and any
+/// disabled flag migrates with it.
 #[tauri::command]
 pub fn skill_save(
     name: String,
@@ -182,24 +167,66 @@ pub fn skill_save(
     state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
     let parsed = crate::skills::Skill::from_markdown(&markdown).map_err(|e| e.to_string())?;
-    if parsed.name != name {
-        return Err(format!(
-            "name changed: file is `{name}` but markdown declares `{}`",
-            parsed.name
-        ));
-    }
     let dir = state.user_skills_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(format!("{}.md", name));
-    std::fs::write(&path, &markdown).map_err(|e| e.to_string())?;
+
+    if parsed.name == name {
+        let path = dir.join(format!("{}.md", name));
+        std::fs::write(&path, &markdown).map_err(|e| e.to_string())?;
+        state.reload_skills();
+        return Ok(());
+    }
+
+    // ── rename path ──────────────────────────────────────────────────────
+    let new_path = dir.join(format!("{}.md", parsed.name));
+    if new_path.exists() {
+        return Err(format!("a skill named `{}` already exists.", parsed.name));
+    }
+
+    // Write the new file first.
+    std::fs::write(&new_path, &markdown).map_err(|e| e.to_string())?;
+    // Remove the old user file if it exists.
+    let old_path = dir.join(format!("{}.md", name));
+    if old_path.exists() {
+        if let Err(e) = std::fs::remove_file(&old_path) {
+            // Roll back the new file so we don't end up with both names.
+            let _ = std::fs::remove_file(&new_path);
+            return Err(format!("couldn't remove old file: {e}"));
+        }
+    }
+    // Carry the disabled flag across the rename.
+    let disabled = state.settings.disabled_skills();
+    if disabled.contains(&name) {
+        let _ = state.settings.set_skill_disabled(&name, false);
+        let _ = state.settings.set_skill_disabled(&parsed.name, true);
+    }
     state.reload_skills();
     Ok(())
 }
 
-/// Remove a user override for a built-in (reverts to factory) or delete
-/// a purely user-created skill entirely.
+/// Turn a skill on or off without deleting it. Disabled skills stay in the
+/// list and keep their edits, but never match at runtime.
 #[tauri::command]
-pub fn skill_reset(
+pub fn skill_set_enabled(
+    name: String,
+    enabled: bool,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    // Verify the skill actually exists so the UI can't drift silently.
+    let exists = state.skills.lock().iter().any(|s| s.name == name);
+    if !exists {
+        return Err(format!("skill `{name}` not found"));
+    }
+    state
+        .settings
+        .set_skill_disabled(&name, !enabled)
+        .map_err(|e| e.to_string())
+}
+
+/// Delete a skill: removes the markdown file and clears any disabled-state
+/// entry (a deleted skill doesn't need to remember it was also turned off).
+#[tauri::command]
+pub fn skill_delete(
     name: String,
     state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
@@ -208,6 +235,7 @@ pub fn skill_reset(
     if path.exists() {
         std::fs::remove_file(&path).map_err(|e| e.to_string())?;
     }
+    let _ = state.settings.set_skill_disabled(&name, false);
     state.reload_skills();
     Ok(())
 }

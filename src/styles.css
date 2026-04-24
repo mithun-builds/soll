@@ -156,6 +156,16 @@ code {
   gap: 12px;
 }
 
+.pane-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.pane-header-row h1 {
+  margin: 0;
+}
+
 .pane-loading,
 .empty-hint {
   padding: 30px;
@@ -191,7 +201,8 @@ code {
   font-size: 12.5px;
 }
 
-input[type="text"] {
+input[type="text"],
+textarea {
   background: var(--bg-elev);
   border: 1px solid var(--border);
   color: var(--fg);
@@ -203,7 +214,8 @@ input[type="text"] {
   transition: border-color 120ms ease;
   margin-top: 4px;
 }
-input[type="text"]:focus {
+input[type="text"]:focus,
+textarea:focus {
   border-color: var(--accent);
 }
 
@@ -450,24 +462,100 @@ code.trigger {
   color: var(--fg);
 }
 
-.skill-editor {
-  width: 100%;
-  min-height: 360px;
-  flex: 1;
-  background: #08080c;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+/* ── sectioned skill form ─────────────────────────────────────────── */
+
+.skill-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.skill-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.skill-field-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
   color: var(--fg);
-  padding: 14px 16px;
+}
+
+.skill-field-label .req-mark {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.skill-field-hint {
+  font-size: 12px;
+  color: var(--fg-subtle);
+  line-height: 1.45;
+  margin-bottom: 2px;
+}
+
+.skill-field-hint code {
+  background: rgba(0, 0, 0, 0.3);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11.5px;
+}
+
+.skill-field-error {
+  font-size: 12px;
+  color: #fca5a5;
+  line-height: 1.45;
+  padding: 6px 10px;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  border-radius: 6px;
+}
+
+.skill-field .text-input,
+.skill-field .text-area {
+  width: 100%;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--fg);
+  padding: 9px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  outline: none;
+  font-family: inherit;
+  margin-top: 0;
+}
+
+.skill-field .text-area {
+  resize: vertical;
+  min-height: 64px;
+  tab-size: 2;
+}
+
+.skill-field .text-area.mono,
+.skill-field .text-input.mono {
   font-family: "SF Mono", Menlo, monospace;
   font-size: 12.5px;
   line-height: 1.6;
-  resize: vertical;
-  outline: none;
-  tab-size: 2;
 }
-.skill-editor:focus {
+
+.skill-field .text-input:focus,
+.skill-field .text-area:focus {
   border-color: var(--accent);
+}
+
+.skill-field .text-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.skill-field.has-error .text-input,
+.skill-field.has-error .text-area {
+  border-color: rgba(239, 68, 68, 0.5);
 }
 
 .editor-actions {
@@ -527,6 +615,36 @@ button.danger-btn:hover {
 .hint-callout strong {
   color: var(--accent);
   font-weight: 600;
+}
+
+/* ── skill section blocks ─────────────────────────────────────────── */
+
+.skill-blocks {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 0;
+  margin: 0;
+}
+.skill-blocks li {
+  border-left: 2px solid var(--border);
+  padding-left: 12px;
+}
+.skill-block-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.skill-block-label code {
+  font-size: 12.5px;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.skill-blocks .subtle {
+  margin: 0;
 }
 
 .plain-list {
@@ -607,4 +725,111 @@ button.danger-btn:hover {
     opacity: 0.3;
     transform: scale(0.9);
   }
+}
+
+/* ── skill row on/off toggle ──────────────────────────────────────── */
+
+.skill-row-off .row-title,
+.skill-row-off .subtle {
+  opacity: 0.55;
+}
+
+.skill-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  flex-shrink: 0;
+  user-select: none;
+}
+.skill-toggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.skill-toggle-track {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border-strong);
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.skill-toggle-thumb {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #b5b5c0;
+  transition: transform 140ms ease, background 120ms ease;
+}
+.skill-toggle.on .skill-toggle-track {
+  background: var(--success);
+  border-color: var(--success);
+}
+.skill-toggle.on .skill-toggle-thumb {
+  transform: translateX(14px);
+  background: #fff;
+}
+.skill-toggle-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--fg-subtle);
+  min-width: 22px;
+  text-align: left;
+  letter-spacing: 0.02em;
+}
+.skill-toggle.on .skill-toggle-label {
+  color: var(--fg);
+}
+
+/* ── tips pane ────────────────────────────────────────────────────── */
+
+.tips-section {
+  padding: 16px 18px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  gap: 10px;
+}
+.tips-section h2 {
+  color: var(--fg);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.tips-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.55;
+  padding: 0;
+  margin: 0;
+}
+.tips-list li {
+  padding-left: 14px;
+  position: relative;
+}
+.tips-list li::before {
+  content: "›";
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: var(--accent);
+  font-weight: 600;
+}
+.tips-list code {
+  font-size: 12px;
+  padding: 1px 5px;
+}
+.tips-list em {
+  color: var(--fg);
+  font-style: italic;
 }

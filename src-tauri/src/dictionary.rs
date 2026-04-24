@@ -1,5 +1,5 @@
 //! Personal dictionary — SQLite-backed store for names, jargon, and other
-//! terms the user wants Svara to get right every time.
+//! terms the user wants Soll to get right every time.
 //!
 //! Two consumers:
 //! 1. Whisper — top-N terms injected as `initial_prompt` to bias decoding.

@@ -1,13 +1,13 @@
 [package]
-name = "svara"
+name = "soll"
 version = "0.1.0"
 description = "Open-source local-first voice dictation"
-authors = ["Svara contributors"]
+authors = ["Soll contributors"]
 edition = "2021"
 rust-version = "1.77"
 
 [lib]
-name = "svara_lib"
+name = "soll_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [build-dependencies]

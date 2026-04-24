@@ -14,6 +14,10 @@ use std::sync::Arc;
 pub const KEY_WHISPER_MODEL: &str = "whisper_model";
 pub const KEY_USER_NAME: &str = "user_name";
 pub const KEY_AI_CLEANUP: &str = "ai_cleanup_enabled";
+/// Comma-separated list of skill names the user has turned off. Disabled
+/// skills are loaded but skipped during trigger matching. Stored in settings
+/// (not deleted) so toggling them back on is instant and preserves any edits.
+pub const KEY_DISABLED_SKILLS: &str = "disabled_skills";
 
 pub const DEFAULT_AI_CLEANUP: bool = true;
 
@@ -80,6 +84,30 @@ impl Settings {
         )?;
         Ok(())
     }
+
+    /// Return the set of skill names the user has turned off.
+    pub fn disabled_skills(&self) -> std::collections::HashSet<String> {
+        let raw = self.get_or_default(KEY_DISABLED_SKILLS, "");
+        raw.split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    /// Add or remove `name` from the disabled-skills list.
+    pub fn set_skill_disabled(&self, name: &str, disabled: bool) -> Result<()> {
+        let mut set = self.disabled_skills();
+        if disabled {
+            set.insert(name.to_string());
+        } else {
+            set.remove(name);
+        }
+        // Stable alphabetical order so the DB diff stays predictable.
+        let mut list: Vec<String> = set.into_iter().collect();
+        list.sort();
+        self.set(KEY_DISABLED_SKILLS, &list.join(","))
+    }
 }
 
 #[cfg(test)]
@@ -109,4 +137,30 @@ mod tests {
         s.set("absent", "real").unwrap();
         assert_eq!(s.get_or_default("absent", "fallback"), "real");
     }
+
+    #[test]
+    fn disabled_skills_roundtrip() {
+        let s = Settings::in_memory().unwrap();
+        assert!(s.disabled_skills().is_empty());
+        s.set_skill_disabled("email", true).unwrap();
+        s.set_skill_disabled("prompt-better", true).unwrap();
+        let set = s.disabled_skills();
+        assert!(set.contains("email"));
+        assert!(set.contains("prompt-better"));
+        s.set_skill_disabled("email", false).unwrap();
+        let set = s.disabled_skills();
+        assert!(!set.contains("email"));
+        assert!(set.contains("prompt-better"));
+    }
+
+    #[test]
+    fn disabled_skills_ignores_blank_entries() {
+        let s = Settings::in_memory().unwrap();
+        // Simulate a corrupted/empty setting: double-comma, trailing comma.
+        s.set(KEY_DISABLED_SKILLS, ",,email,, ,").unwrap();
+        let set = s.disabled_skills();
+        assert_eq!(set.len(), 1);
+        assert!(set.contains("email"));
+    }
+
 }

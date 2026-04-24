@@ -1,14 +1,17 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
+
+// ── types ─────────────────────────────────────────────────────────────────
+
+type SkillKind = "ai" | "phrase";
 
 type Skill = {
   name: string;
   description: string;
-  intent: string | null;
   triggers: string[];
-  source: "default" | "custom";
   native: string | null;
-  has_builtin_default: boolean;
+  enabled: boolean;
+  kind: SkillKind;
 };
 
 type Mode =
@@ -16,44 +19,241 @@ type Mode =
   | { kind: "edit"; name: string }
   | { kind: "create" };
 
-const NEW_TEMPLATE = `---
-name: my-skill
-description: One-line description shown in Settings
----
+// Per-kind copy — everything user-visible lives here so the two panes
+// stay in visual step with each other.
+const COPY = {
+  ai: {
+    title: "Skills",
+    subtitle:
+      "Voice shortcuts that run through a local AI to transform your dictation. Click one to edit.",
+    emptyHint: (
+      <>
+        No skills yet. Click <strong>+ New skill</strong> to create one.
+      </>
+    ),
+    newBtn: "+ New skill",
+    editorNewTitle: "New skill",
+    bodyFieldLabel: "What the AI should do",
+    bodyFieldHint: (
+      <>
+        Use <code>[body]</code> for the utterance, <code>[name]</code> for the
+        user, or any <code>[variable]</code> from a trigger.
+      </>
+    ),
+    bodyPlaceholder:
+      "Rewrite the following as a short, casual Slack message.\nOutput only the message, nothing else.\n\n[body]",
+    bodyRequiredError: "Instructions are required.",
+    deleteConfirm: (name: string) => `Delete "${name}"?`,
+  },
+  phrase: {
+    title: "Phrases",
+    subtitle:
+      "Voice shortcuts that paste a saved block of text verbatim — no AI, no latency. Click one to edit.",
+    emptyHint: (
+      <>
+        No phrases yet. Click <strong>+ New phrase</strong> to create one.
+      </>
+    ),
+    newBtn: "+ New phrase",
+    editorNewTitle: "New phrase",
+    bodyFieldLabel: "Text to paste",
+    bodyFieldHint: (
+      <>
+        Pasted verbatim when the trigger fires. Use <code>[body]</code> or any{" "}
+        <code>[variable]</code> from a trigger to splice captured words in.
+      </>
+    ),
+    bodyPlaceholder:
+      "Here's my Calendly link to book a time:\nhttps://calendly.com/you",
+    bodyRequiredError: "Phrase text is required.",
+    deleteConfirm: (name: string) => `Delete "${name}"?`,
+  },
+} as const;
 
-## Intent
-Describe in plain English when this skill should activate.
-Example: "The user wants to summarise a piece of text."
+// ── section data model ────────────────────────────────────────────────────
+//
+// A single editor form backs both kinds. The body field name (`instructions`
+// vs `phrase`) is tracked by `kind`, and the markdown assembler writes the
+// matching section heading.
 
-## Instructions
-Write your instructions here in plain English.
-Describe the output format inline — just show it as you want it to appear.
+type Sections = {
+  name: string;
+  description: string;
+  triggers: string;
+  kind: SkillKind;
+  body: string;
+};
 
-The user's name and what they said are added automatically.
-`;
+function emptySections(kind: SkillKind): Sections {
+  return { name: "", description: "", triggers: "", kind, body: "" };
+}
+
+function sectionsEqual(a: Sections, b: Sections): boolean {
+  return (
+    a.name === b.name &&
+    a.description === b.description &&
+    a.triggers === b.triggers &&
+    a.kind === b.kind &&
+    a.body === b.body
+  );
+}
+
+/** Parse the raw skill markdown into editable per-section fields. Accepts
+ *  both the section-based format (## Name, ## Description) and the legacy
+ *  YAML-frontmatter format (---\nname:\ndescription:\n---). Strips comment
+ *  lines (lines starting with `#`) and any leading `- `/`* ` bullet markers
+ *  in Triggers. */
+function parseSections(md: string): Sections {
+  let body = md;
+  let fmName = "";
+  let fmDesc = "";
+  const trimmed = md.trimStart();
+  if (trimmed.startsWith("---")) {
+    const rest = trimmed.slice(3);
+    const closeIdx = rest.indexOf("\n---");
+    if (closeIdx >= 0) {
+      const fm = rest.slice(0, closeIdx);
+      body = rest.slice(closeIdx + 4).replace(/^\n+/, "");
+      for (const line of fm.split("\n")) {
+        const m = line.match(/^\s*(\w+)\s*:\s*(.*?)\s*$/);
+        if (!m) continue;
+        if (m[1] === "name") fmName = m[2];
+        if (m[1] === "description") fmDesc = m[2];
+      }
+    }
+  }
+
+  const rawSection = (heading: string): string => {
+    const re = new RegExp(`^##\\s+${heading}\\s*$`, "m");
+    const match = body.match(re);
+    if (!match || match.index === undefined) return "";
+    const start = match.index + match[0].length;
+    const after = body.slice(start).replace(/^\n/, "");
+    const nextIdx = after.search(/\n## /);
+    const raw = nextIdx >= 0 ? after.slice(0, nextIdx) : after;
+    return raw
+      .split("\n")
+      .filter((l) => !l.trimStart().startsWith("#"))
+      .join("\n")
+      .trim();
+  };
+
+  const firstLine = (s: string): string =>
+    s.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "";
+
+  const triggersRaw = rawSection("Triggers");
+  const triggers = triggersRaw
+    .split("\n")
+    .map((l) => l.replace(/^\s*[-*]\s*/, "").trim())
+    .filter((l) => l.length > 0)
+    .join("\n");
+
+  const nameSection = firstLine(rawSection("Name"));
+  const descSection = firstLine(rawSection("Description"));
+
+  // Body comes from either `## Instructions` (AI) or `## Phrase` (literal
+  // paste) — the parser in Rust requires exactly one. Whichever one exists
+  // tells us the kind.
+  const instructions = rawSection("Instructions");
+  const phrase = rawSection("Phrase");
+  const kind: SkillKind = phrase && !instructions ? "phrase" : "ai";
+  const bodyContent = kind === "phrase" ? phrase : instructions;
+
+  return {
+    name: nameSection || fmName,
+    description: descSection || fmDesc,
+    triggers,
+    kind,
+    body: bodyContent,
+  };
+}
+
+/** Assemble sections back into canonical markdown for save. Writes exactly
+ *  one of `## Instructions` or `## Phrase` depending on the kind, so the
+ *  file matches what the user sees in the editor. */
+function assembleMarkdown(s: Sections): string {
+  const parts: string[] = [];
+  parts.push(`## Name\n${s.name.trim()}`);
+  parts.push(`## Description\n${s.description.trim()}`);
+  const triggerLines = s.triggers
+    .split("\n")
+    .map((l) => l.replace(/^\s*[-*]\s*/, "").trim())
+    .filter((l) => l.length > 0);
+  parts.push(
+    `## Triggers\n${triggerLines.map((t) => `- ${t}`).join("\n")}`,
+  );
+  const heading = s.kind === "phrase" ? "Phrase" : "Instructions";
+  parts.push(`## ${heading}\n${s.body.trim()}`);
+  return parts.join("\n\n") + "\n";
+}
+
+/** Validate a skill name against the same rules the Rust backend enforces. */
+function validateName(name: string): string | null {
+  if (!name) return "Name is required.";
+  if (name.length > 40) return "Name must be 40 characters or fewer.";
+  const first = name[0];
+  if (!/[a-z]/.test(first)) {
+    return "Must start with a lowercase letter.";
+  }
+  if (name.endsWith("-")) return "Can't end with a hyphen.";
+  const bad = name.match(/[^a-z0-9-]/);
+  if (bad) {
+    return `Only lowercase letters, digits, and hyphens (got "${bad[0]}").`;
+  }
+  return null;
+}
+
+// ── exported panes ────────────────────────────────────────────────────────
+//
+// Both panes are the same list/editor flow — just filtered and relabelled.
+// Exporting two thin wrappers so `SettingsApp` can route to either.
 
 export function SkillsPane() {
+  return <KindPane kind="ai" />;
+}
+
+export function PhrasesPane() {
+  return <KindPane kind="phrase" />;
+}
+
+// ── the shared pane ───────────────────────────────────────────────────────
+
+function KindPane({ kind }: { kind: SkillKind }) {
+  const copy = COPY[kind];
   const [skills, setSkills] = useState<Skill[]>([]);
   const [mode, setMode] = useState<Mode>({ kind: "list" });
   const [err, setErr] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const list = await invoke<Skill[]>("skill_list");
-      setSkills(list);
+      const all = await invoke<Skill[]>("skill_list");
+      setSkills(all.filter((s) => s.kind === kind));
     } catch (e) {
       setErr(String(e));
     }
-  }, []);
+  }, [kind]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
 
+  const setEnabled = async (name: string, enabled: boolean) => {
+    // Optimistic update so the toggle feels instant.
+    setSkills((cur) =>
+      cur.map((s) => (s.name === name ? { ...s, enabled } : s)),
+    );
+    try {
+      await invoke("skill_set_enabled", { name, enabled });
+    } catch (e) {
+      setErr(String(e));
+      refresh(); // resync on error
+    }
+  };
+
   if (mode.kind === "edit") {
     return (
       <SkillEditor
+        kind={kind}
         name={mode.name}
         skill={skills.find((s) => s.name === mode.name) || null}
         onClose={(changed) => {
@@ -66,6 +266,7 @@ export function SkillsPane() {
   if (mode.kind === "create") {
     return (
       <SkillCreator
+        kind={kind}
         onClose={(changed) => {
           setMode({ kind: "list" });
           if (changed) refresh();
@@ -76,138 +277,130 @@ export function SkillsPane() {
 
   return (
     <>
-      <h1>Skills</h1>
-      <p className="subtle">
-        Skills are markdown files. When a dictation starts with one of a
-        skill's trigger phrases, that skill handles the whole transformation.
-        Speech that doesn't match any skill follows the default cleanup.
-      </p>
-
-      <div className="pane-section">
-        <div className="section-header">
-          <h2>Active skills</h2>
-          <button
-            type="button"
-            className="secondary"
-            onClick={() => setMode({ kind: "create" })}
-          >
-            + New skill
-          </button>
-        </div>
-
-        {skills.length === 0 ? (
-          <div className="empty-hint">No skills loaded.</div>
-        ) : (
-          <ul className="row-list">
-            {skills.map((s) => {
-              const open = expanded === s.name;
-              return (
-                <li key={s.name} className="row column">
-                  <div className="row-clickable" onClick={() => setExpanded(open ? null : s.name)}>
-                    <div className="row-main">
-                      <div className="row-title">
-                        {s.name}{" "}
-                        {s.source === "custom" && s.has_builtin_default && (
-                          <span className="subtle">(edited)</span>
-                        )}
-                      </div>
-                      <div className="subtle">{s.description}</div>
-                    </div>
-                    <span className={`badge ${s.source}`}>{s.source}</span>
-                  </div>
-                  {open && (
-                    <div className="row-details">
-                      {s.intent ? (
-                        <div className="detail-row">
-                          <span className="subtle">Activated when</span>
-                          <span>{s.intent}</span>
-                        </div>
-                      ) : s.triggers.length > 0 ? (
-                        <div className="detail-row">
-                          <span className="subtle">Say one of</span>
-                          <ul className="trigger-list">
-                            {s.triggers.map((t, i) => (
-                              <li key={i}>
-                                <code>{prettyTrigger(t)}</code>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      ) : null}
-                      <div className="detail-actions">
-                        <button
-                          type="button"
-                          className="primary"
-                          onClick={() => setMode({ kind: "edit", name: s.name })}
-                        >
-                          Edit
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        )}
+      <div className="pane-header-row">
+        <h1>{copy.title}</h1>
+        <button
+          type="button"
+          className="secondary"
+          onClick={() => setMode({ kind: "create" })}
+        >
+          {copy.newBtn}
+        </button>
       </div>
+      <p className="subtle">{copy.subtitle}</p>
 
-      <div className="pane-section">
-        <h2>How skills work</h2>
-        <p className="subtle">
-          Each skill is a markdown file with two sections:{" "}
-          <code>## Intent</code> (when should this activate?) and{" "}
-          <code>## Instructions</code> (what should the AI do?). That's it —
-          no special syntax, no variables to learn.
-        </p>
-        <p className="hint-callout">
-          In <code>## Instructions</code>, just write what you want in plain
-          English. Describe the output format inline — show it as you want it
-          to appear. The AI automatically knows what the user said and what
-          their name is, so you don't need to reference them explicitly.
-        </p>
-      </div>
+      {skills.length === 0 ? (
+        <div className="empty-hint">{copy.emptyHint}</div>
+      ) : (
+        <ul className="row-list">
+          {skills.map((s) => (
+            <li
+              key={s.name}
+              className={`row row-clickable skill-row${s.enabled ? "" : " skill-row-off"}`}
+              onClick={() => setMode({ kind: "edit", name: s.name })}
+            >
+              <div className="row-main">
+                <div className="row-title">
+                  {s.name}
+                  {!s.enabled && <span className="subtle"> · off</span>}
+                </div>
+                <div className="subtle">{s.description}</div>
+              </div>
+              <Toggle
+                checked={s.enabled}
+                label={s.enabled ? "On" : "Off"}
+                onChange={(next) => setEnabled(s.name, next)}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
 
       {err && <div className="pane-error">{err}</div>}
     </>
   );
 }
 
+// ── compact switch ────────────────────────────────────────────────────────
+
+function Toggle({
+  checked,
+  label,
+  onChange,
+}: {
+  checked: boolean;
+  label: string;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <label
+      className={`skill-toggle${checked ? " on" : ""}`}
+      onClick={(e) => e.stopPropagation()}
+      title={checked ? "On — click to turn off" : "Off — click to turn on"}
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <span className="skill-toggle-track">
+        <span className="skill-toggle-thumb" />
+      </span>
+      <span className="skill-toggle-label">{label}</span>
+    </label>
+  );
+}
+
 // ── editor for an existing skill ──────────────────────────────────────────
 
 function SkillEditor({
+  kind,
   name,
   skill,
   onClose,
 }: {
+  kind: SkillKind;
   name: string;
   skill: Skill | null;
   onClose: (changed: boolean) => void;
 }) {
-  const [draft, setDraft] = useState<string>("");
-  const [initial, setInitial] = useState<string>("");
+  const copy = COPY[kind];
+  const [sections, setSections] = useState<Sections>(emptySections(kind));
+  const [initial, setInitial] = useState<Sections>(emptySections(kind));
   const [err, setErr] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [submitAttempted, setSubmitAttempted] = useState(false);
+
+  const nameEditable = !!skill;
 
   useEffect(() => {
     (async () => {
       try {
         const src = await invoke<string>("skill_get_source", { name });
-        setDraft(src);
-        setInitial(src);
+        const parsed = parseSections(src);
+        setSections(parsed);
+        setInitial(parsed);
       } catch (e) {
         setErr(String(e));
       }
     })();
   }, [name]);
 
-  const dirty = draft !== initial;
+  const dirty = !sectionsEqual(sections, initial);
 
-  const save = async () => {
+  const save = async (next: Sections) => {
+    setSubmitAttempted(true);
+    const err = preSaveError(next, copy);
+    if (err) {
+      setErr(err);
+      return;
+    }
     setSaving(true);
     setErr(null);
     try {
-      await invoke("skill_save", { name, markdown: draft });
+      const payloadName = nameEditable ? next.name : name;
+      const md = assembleMarkdown({ ...next, name: payloadName });
+      await invoke("skill_save", { name, markdown: md });
       onClose(true);
     } catch (e) {
       setErr(String(e));
@@ -216,38 +409,11 @@ function SkillEditor({
     }
   };
 
-  const resetToDefault = async () => {
-    if (!skill?.has_builtin_default) return;
-    if (
-      !window.confirm(
-        `Reset "${name}" to its factory default? Your customizations will be removed.`,
-      )
-    )
-      return;
-    try {
-      await invoke("skill_reset", { name });
-      onClose(true);
-    } catch (e) {
-      setErr(String(e));
-    }
-  };
-
   const deleteSkill = async () => {
-    if (!window.confirm(`Delete "${name}"? This cannot be undone.`)) return;
+    if (!window.confirm(copy.deleteConfirm(name))) return;
     try {
-      await invoke("skill_reset", { name });
+      await invoke("skill_delete", { name });
       onClose(true);
-    } catch (e) {
-      setErr(String(e));
-    }
-  };
-
-  const reloadFromDefault = async () => {
-    try {
-      const src = await invoke<string | null>("skill_get_default_source", {
-        name,
-      });
-      if (src) setDraft(src);
     } catch (e) {
       setErr(String(e));
     }
@@ -257,20 +423,17 @@ function SkillEditor({
     <>
       <div className="editor-header">
         <button type="button" className="back-btn" onClick={() => onClose(false)}>
-          ← Back to skills
+          ← Back
         </button>
-        <h1>Edit {name}</h1>
-        {skill && (
-          <span className={`badge ${skill.source}`}>{skill.source}</span>
-        )}
+        <h1>{name}</h1>
       </div>
 
-      <textarea
-        className="skill-editor"
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        spellCheck={false}
-        autoFocus
+      <SkillForm
+        kind={kind}
+        sections={sections}
+        onChange={setSections}
+        nameEditable={nameEditable}
+        showErrors={submitAttempted}
       />
 
       {err && <div className="pane-error">{err}</div>}
@@ -280,7 +443,7 @@ function SkillEditor({
           type="button"
           className="primary"
           disabled={!dirty || saving}
-          onClick={save}
+          onClick={() => save(sections)}
         >
           {saving ? "Saving…" : "Save"}
         </button>
@@ -292,33 +455,11 @@ function SkillEditor({
           Cancel
         </button>
         <div className="spacer" />
-        {skill?.has_builtin_default && skill.source === "custom" && (
-          <button
-            type="button"
-            className="secondary"
-            onClick={resetToDefault}
-            title="Remove your edits and restore the default version"
-          >
-            Reset to default
+        {skill && (
+          <button type="button" className="danger-btn" onClick={deleteSkill}>
+            Delete
           </button>
         )}
-        {skill?.has_builtin_default && (
-          <button
-            type="button"
-            className="secondary"
-            onClick={reloadFromDefault}
-            title="Load the default markdown into the editor (does not save)"
-          >
-            Load default into editor
-          </button>
-        )}
-        {skill &&
-          skill.source === "custom" &&
-          !skill.has_builtin_default && (
-            <button type="button" className="danger-btn" onClick={deleteSkill}>
-              Delete skill
-            </button>
-          )}
       </div>
     </>
   );
@@ -326,16 +467,31 @@ function SkillEditor({
 
 // ── new-skill form ─────────────────────────────────────────────────────────
 
-function SkillCreator({ onClose }: { onClose: (changed: boolean) => void }) {
-  const [draft, setDraft] = useState<string>(NEW_TEMPLATE);
+function SkillCreator({
+  kind,
+  onClose,
+}: {
+  kind: SkillKind;
+  onClose: (changed: boolean) => void;
+}) {
+  const copy = COPY[kind];
+  const [sections, setSections] = useState<Sections>(emptySections(kind));
   const [err, setErr] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [submitAttempted, setSubmitAttempted] = useState(false);
 
   const save = async () => {
+    setSubmitAttempted(true);
+    const err = preSaveError(sections, copy);
+    if (err) {
+      setErr(err);
+      return;
+    }
     setSaving(true);
     setErr(null);
     try {
-      await invoke<string>("skill_create", { markdown: draft });
+      const md = assembleMarkdown(sections);
+      await invoke<string>("skill_create", { markdown: md });
       onClose(true);
     } catch (e) {
       setErr(String(e));
@@ -348,22 +504,17 @@ function SkillCreator({ onClose }: { onClose: (changed: boolean) => void }) {
     <>
       <div className="editor-header">
         <button type="button" className="back-btn" onClick={() => onClose(false)}>
-          ← Back to skills
+          ← Back
         </button>
-        <h1>New skill</h1>
+        <h1>{copy.editorNewTitle}</h1>
       </div>
 
-      <p className="subtle">
-        Edit the template below, then click Create. The name in the
-        frontmatter becomes the skill's id; change it before saving.
-      </p>
-
-      <textarea
-        className="skill-editor"
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        spellCheck={false}
-        autoFocus
+      <SkillForm
+        kind={kind}
+        sections={sections}
+        onChange={setSections}
+        nameEditable={true}
+        showErrors={submitAttempted}
       />
 
       {err && <div className="pane-error">{err}</div>}
@@ -389,31 +540,162 @@ function SkillCreator({ onClose }: { onClose: (changed: boolean) => void }) {
   );
 }
 
+// ── shared form component ─────────────────────────────────────────────────
+
+function SkillForm({
+  kind,
+  sections,
+  onChange,
+  nameEditable,
+  showErrors,
+}: {
+  kind: SkillKind;
+  sections: Sections;
+  onChange: (next: Sections) => void;
+  nameEditable: boolean;
+  showErrors: boolean;
+}) {
+  const copy = COPY[kind];
+  const patch = (k: keyof Sections) => (v: string) =>
+    onChange({ ...sections, [k]: v });
+
+  const nameErr = useMemo(() => validateName(sections.name), [sections.name]);
+  const triggersErr =
+    showErrors && !sections.triggers.trim()
+      ? "Add at least one trigger phrase so it can activate."
+      : null;
+  const bodyErr =
+    showErrors && !sections.body.trim() ? copy.bodyRequiredError : null;
+  const descriptionErr =
+    showErrors && !sections.description.trim()
+      ? "Description is required."
+      : null;
+
+  return (
+    <div className="skill-form">
+      <Field
+        label="Name"
+        required
+        hint="Lowercase letters, digits, hyphens."
+        error={nameEditable && (sections.name || showErrors) ? nameErr : null}
+      >
+        <input
+          type="text"
+          className="text-input"
+          value={sections.name}
+          onChange={(e) => patch("name")(e.target.value)}
+          placeholder={kind === "phrase" ? "my-phrase" : "my-skill"}
+          spellCheck={false}
+          autoComplete="off"
+          disabled={!nameEditable}
+        />
+      </Field>
+
+      <Field
+        label="Description"
+        required
+        hint="One line shown under this row in the list."
+        error={descriptionErr}
+      >
+        <input
+          type="text"
+          className="text-input"
+          value={sections.description}
+          onChange={(e) => patch("description")(e.target.value)}
+          placeholder={
+            kind === "phrase"
+              ? "Paste my Calendly booking link"
+              : "Turn dictation into a slack message"
+          }
+          spellCheck={false}
+        />
+      </Field>
+
+      <Field
+        label="Trigger phrases"
+        required
+        hint={
+          <>
+            One phrase per line. Use <code>&lt;variable&gt;</code> to capture
+            parts of what the user said.
+          </>
+        }
+        error={triggersErr}
+      >
+        <textarea
+          className="text-area"
+          rows={3}
+          value={sections.triggers}
+          onChange={(e) => patch("triggers")(e.target.value)}
+          placeholder={
+            kind === "phrase"
+              ? "calendly\nsend calendly\nbook time"
+              : "slack <recipient> <body>\nmessage <recipient> <body>"
+          }
+          spellCheck={false}
+        />
+      </Field>
+
+      <Field
+        label={copy.bodyFieldLabel}
+        required
+        hint={copy.bodyFieldHint}
+        error={bodyErr}
+      >
+        <textarea
+          className="text-area mono"
+          rows={7}
+          value={sections.body}
+          onChange={(e) => patch("body")(e.target.value)}
+          placeholder={copy.bodyPlaceholder}
+          spellCheck={false}
+        />
+      </Field>
+    </div>
+  );
+}
+
+function Field({
+  label,
+  hint,
+  required,
+  error,
+  children,
+}: {
+  label: string;
+  hint?: React.ReactNode;
+  required?: boolean;
+  error?: string | null;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={`skill-field ${error ? "has-error" : ""}`}>
+      <div className="skill-field-label">
+        <span>
+          {label}
+          {required && <span className="req-mark"> *</span>}
+        </span>
+      </div>
+      {hint && <div className="skill-field-hint">{hint}</div>}
+      {children}
+      {error && <div className="skill-field-error">{error}</div>}
+    </div>
+  );
+}
+
 // ── helpers ────────────────────────────────────────────────────────────────
 
-function prettyTrigger(t: string): React.ReactNode {
-  const parts: Array<{ text: string; placeholder: boolean }> = [];
-  const re = /\{[^}]+\}/g;
-  let last = 0;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(t)) !== null) {
-    if (m.index > last)
-      parts.push({ text: t.slice(last, m.index), placeholder: false });
-    parts.push({ text: m[0], placeholder: true });
-    last = m.index + m[0].length;
+/** Return a human-readable error when `s` is not yet ready to save, or null. */
+function preSaveError(
+  s: Sections,
+  copy: (typeof COPY)[SkillKind],
+): string | null {
+  const nameErr = validateName(s.name);
+  if (nameErr) return nameErr;
+  if (!s.description.trim()) return "Description is required.";
+  if (!s.triggers.trim()) {
+    return "Add at least one trigger phrase.";
   }
-  if (last < t.length) parts.push({ text: t.slice(last), placeholder: false });
-  return (
-    <>
-      {parts.map((p, i) =>
-        p.placeholder ? (
-          <span key={i} className="ph">
-            {p.text}
-          </span>
-        ) : (
-          <span key={i}>{p.text}</span>
-        ),
-      )}
-    </>
-  );
+  if (!s.body.trim()) return copy.bodyRequiredError;
+  return null;
 }

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const OLLAMA_GENERATE: &str = "http://127.0.0.1:11434/api/generate";
+const OLLAMA_CHAT: &str = "http://127.0.0.1:11434/api/chat";
 const OLLAMA_TAGS: &str = "http://127.0.0.1:11434/api/tags";
 const MODEL: &str = "llama3.2:3b";
 
@@ -59,6 +60,43 @@ struct GenOptions {
 #[derive(Deserialize)]
 struct GenResp {
     response: String,
+}
+
+// ── chat API (used for skill execution) ───────────────────────────────────
+
+/// System prompt injected for every skill call.
+/// The model sees this before the user's skill instructions, anchoring its
+/// behaviour to "output only the result" before it reads anything else.
+const SKILL_SYSTEM: &str = "\
+You are a precise text transformer. The user will give you instructions and \
+some dictated text. Follow the instructions exactly and output ONLY the \
+requested result — no preamble, no explanation, no apology, no markdown, \
+no \"here's\", no \"sure\", no \"certainly\". \
+Just the transformed text, nothing else.";
+
+#[derive(Serialize)]
+struct ChatMessage<'a> {
+    role: &'a str,
+    content: String,
+}
+
+#[derive(Serialize)]
+struct ChatReq<'a> {
+    model: &'a str,
+    messages: Vec<ChatMessage<'a>>,
+    stream: bool,
+    keep_alive: &'a str,
+    options: GenOptions,
+}
+
+#[derive(Deserialize)]
+struct ChatRespMessage {
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct ChatResp {
+    message: ChatRespMessage,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -180,6 +218,51 @@ impl OllamaClient {
         }
         let parsed: GenResp = resp.json().await?;
         Ok(parsed.response.trim().to_string())
+    }
+
+    /// Execute a skill: send the interpolated instructions to Ollama via the
+    /// **chat** endpoint (system + user message) so the model's instruction-
+    /// tuning fires properly. This produces much cleaner "output only X"
+    /// compliance than raw completion on small (3B) models.
+    pub async fn skill_generate(&self, instructions: &str) -> Result<String> {
+        match self.state() {
+            CleanupState::Unavailable => return Err(anyhow!("ollama unavailable")),
+            CleanupState::WarmingUp | CleanupState::Unknown => {
+                return Err(anyhow!("ollama still warming up"))
+            }
+            CleanupState::Ready => {}
+        }
+        let body = ChatReq {
+            model: MODEL,
+            messages: vec![
+                ChatMessage {
+                    role: "system",
+                    content: SKILL_SYSTEM.to_string(),
+                },
+                ChatMessage {
+                    role: "user",
+                    content: instructions.to_string(),
+                },
+            ],
+            stream: false,
+            keep_alive: "30m",
+            options: GenOptions {
+                temperature: 0.0, // deterministic — skills need predictable output
+                num_predict: 1024,
+            },
+        };
+        let resp = self
+            .live
+            .post(OLLAMA_CHAT)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| anyhow!("ollama chat send: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(anyhow!("ollama chat status: {}", resp.status()));
+        }
+        let parsed: ChatResp = resp.json().await.map_err(|e| anyhow!("ollama chat parse: {e}"))?;
+        Ok(parsed.message.content.trim().to_string())
     }
 
     /// Polish with an optional list of "preserve exactly" terms injected

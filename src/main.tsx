@@ -19,7 +19,7 @@ function Root() {
   }
   return (
     <div className="placeholder">
-      <h1>Svara</h1>
+      <h1>Soll</h1>
       <p>Use the tray icon to open Settings or quit.</p>
     </div>
   );

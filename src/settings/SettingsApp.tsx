@@ -2,17 +2,24 @@ import { useState } from "react";
 import { GeneralPane } from "./panes/GeneralPane";
 import { ModelsPane } from "./panes/ModelsPane";
 import { DictionaryPane } from "./panes/DictionaryPane";
-import { SkillsPane } from "./panes/SkillsPane";
-import { LegendPane } from "./panes/LegendPane";
+import { SkillsPane, PhrasesPane } from "./panes/SkillsPane";
+import { TipsPane } from "./panes/TipsPane";
 
-type Section = "general" | "models" | "dictionary" | "skills" | "legend";
+type Section =
+  | "general"
+  | "models"
+  | "dictionary"
+  | "skills"
+  | "phrases"
+  | "tips";
 
 const NAV: { id: Section; label: string; icon: string }[] = [
   { id: "general", label: "General", icon: "◐" },
   { id: "models", label: "Whisper model", icon: "▣" },
   { id: "dictionary", label: "Dictionary", icon: "☱" },
   { id: "skills", label: "Skills", icon: "✦" },
-  { id: "legend", label: "Status legend", icon: "●" },
+  { id: "phrases", label: "Phrases", icon: "❝" },
+  { id: "tips", label: "Tips & Tricks", icon: "★" },
 ];
 
 export function SettingsApp() {
@@ -21,7 +28,7 @@ export function SettingsApp() {
   return (
     <div className="shell">
       <aside className="sidebar">
-        <div className="sidebar-title">Svara</div>
+        <div className="sidebar-title">Soll</div>
         <nav>
           {NAV.map((n) => (
             <button
@@ -44,7 +51,8 @@ export function SettingsApp() {
         {section === "models" && <ModelsPane />}
         {section === "dictionary" && <DictionaryPane />}
         {section === "skills" && <SkillsPane />}
-        {section === "legend" && <LegendPane />}
+        {section === "phrases" && <PhrasesPane />}
+        {section === "tips" && <TipsPane />}
       </main>
     </div>
   );

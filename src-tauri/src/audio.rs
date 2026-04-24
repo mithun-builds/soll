@@ -27,7 +27,7 @@ impl AudioRecorder {
         let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(u32, u16)>>(1);
 
         let handle = std::thread::Builder::new()
-            .name("svara-audio".into())
+            .name("soll-audio".into())
             .spawn(move || {
                 let outcome = Self::run_stream(samples_for_thread, shutdown_rx, &ready_tx);
                 if let Err(e) = outcome {
