@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 use crate::cleanup::OllamaModel;
 use crate::dictionary::Entry;
@@ -339,6 +339,37 @@ pub fn ollama_model_set(tag: String, state: State<'_, Arc<AppState>>) -> Result<
         .settings
         .set(KEY_OLLAMA_MODEL, &tag)
         .map_err(|e| e.to_string())
+}
+
+// ── window helpers (called from the onboarding frontend) ──────────────────
+
+/// Open the Settings window (any section — the sidebar handles navigation).
+#[tauri::command]
+pub fn open_settings_window_cmd(app: AppHandle) {
+    crate::tray::open_settings_window(&app);
+}
+
+/// Open System Settings to a specific Privacy pane.
+/// `section` is the URL fragment, e.g. "Privacy_Microphone" or
+/// "Privacy_Accessibility".
+#[tauri::command]
+pub fn open_privacy_settings(section: String) -> Result<(), String> {
+    let url = format!(
+        "x-apple.systempreferences:com.apple.preference.security?{section}"
+    );
+    std::process::Command::new("open")
+        .arg(&url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Close the onboarding window programmatically (called after dismiss).
+#[tauri::command]
+pub fn close_onboarding_window(app: AppHandle) {
+    if let Some(w) = app.get_webview_window("onboarding") {
+        let _ = w.close();
+    }
 }
 
 // ── settings (existing) ────────────────────────────────────────────────────

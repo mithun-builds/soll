@@ -19,6 +19,12 @@ pub const KEY_AI_CLEANUP: &str = "ai_cleanup_enabled";
 /// skills are loaded but skipped during trigger matching. Stored in settings
 /// (not deleted) so toggling them back on is instant and preserves any edits.
 pub const KEY_DISABLED_SKILLS: &str = "disabled_skills";
+/// Set to "true" after the user dismisses the onboarding window. Once set,
+/// the window no longer opens automatically on startup.
+pub const KEY_ONBOARDING_DISMISSED: &str = "onboarding_dismissed";
+/// Set to "true" after the user completes their first successful dictation.
+/// Used by the onboarding window to tick the "Try dictating" step.
+pub const KEY_HAS_DICTATED: &str = "has_dictated";
 
 pub const DEFAULT_AI_CLEANUP: bool = true;
 

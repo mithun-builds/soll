@@ -91,6 +91,7 @@ pub fn build_tray(app: &AppHandle) -> Result<()> {
             match id {
                 "quit" => app.exit(0),
                 "settings" => open_settings_window(app),
+                "onboarding" => open_onboarding_window(app),
                 _ => {}
             }
         })
@@ -201,6 +202,10 @@ pub fn open_settings_window(app: &AppHandle) {
     open_window(app, "settings", "Soll — Settings", 860.0, 640.0);
 }
 
+pub fn open_onboarding_window(app: &AppHandle) {
+    open_window(app, "onboarding", "Soll — Setup Guide", 560.0, 660.0);
+}
+
 /// Public for commands that need to refresh the tray after model state
 /// changes. Settings-window initiated downloads use this to flip UI
 /// indicators without going through the tray submenu.
@@ -229,7 +234,9 @@ fn build_menu(app: &AppHandle) -> Result<Menu<Wry>> {
         None::<&str>,
     )?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+    let onboarding = MenuItem::with_id(app, "onboarding", "Setup Guide…", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
+    let sep2 = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Soll", true, Some("Cmd+Q"))?;
 
     Menu::with_items(
@@ -239,7 +246,8 @@ fn build_menu(app: &AppHandle) -> Result<Menu<Wry>> {
             &hotkey_item,
             &sep,
             &settings,
-            &sep,
+            &onboarding,
+            &sep2,
             &quit,
         ],
     )

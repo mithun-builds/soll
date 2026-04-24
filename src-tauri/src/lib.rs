@@ -1,5 +1,6 @@
 mod audio;
 mod commands;
+mod onboarding;
 mod overlay;
 mod paste;
 mod pipeline;
@@ -60,6 +61,11 @@ pub fn run() {
             commands::model_download,
             commands::ollama_models_list,
             commands::ollama_model_set,
+            commands::open_settings_window_cmd,
+            commands::open_privacy_settings,
+            commands::close_onboarding_window,
+            onboarding::onboarding_status,
+            onboarding::onboarding_dismiss,
         ])
         .plugin(
             tauri_plugin_log::Builder::new()
@@ -128,6 +134,15 @@ pub fn run() {
                     tray::set_state(&st.app, TrayState::Idle);
                 }
             });
+
+            // Open the onboarding window on first launch (dismissed flag not set).
+            let show_onboarding = state
+                .settings
+                .get_or_default(settings::KEY_ONBOARDING_DISMISSED, "false")
+                != "true";
+            if show_onboarding {
+                tray::open_onboarding_window(app.handle());
+            }
 
             Ok(())
         })

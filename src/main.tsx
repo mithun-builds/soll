@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { SettingsApp } from "./settings/SettingsApp";
 import { OverlayApp } from "./overlay/OverlayApp";
+import { OnboardingApp } from "./onboarding/OnboardingApp";
 import "./styles.css";
 
 const params = new URLSearchParams(window.location.search);
@@ -15,6 +16,9 @@ if (view === "overlay") {
 function Root() {
   if (view === "overlay") {
     return <OverlayApp />;
+  }
+  if (view === "onboarding") {
+    return <OnboardingApp />;
   }
   // All admin UI lives in the unified Settings window.
   // Legacy ?view=dictionary / ?view=legend are redirected for backwards

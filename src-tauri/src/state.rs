@@ -16,8 +16,8 @@ use crate::formatter::{self, Format};
 use crate::model::{ensure_model, WhisperModel, CANCELLED_MSG};
 use crate::paste::paste_text;
 use crate::settings::{
-    Settings, DEFAULT_AI_CLEANUP, KEY_AI_CLEANUP, KEY_OLLAMA_MODEL, KEY_USER_NAME,
-    KEY_WHISPER_MODEL,
+    Settings, DEFAULT_AI_CLEANUP, KEY_AI_CLEANUP, KEY_HAS_DICTATED, KEY_OLLAMA_MODEL,
+    KEY_USER_NAME, KEY_WHISPER_MODEL,
 };
 use crate::skills::{self, Skill};
 use crate::transcribe::Transcriber;
@@ -124,6 +124,11 @@ pub struct AppState {
     current_model: Mutex<WhisperModel>,
     pub downloading: Mutex<Option<WhisperModel>>,
     download_epoch: std::sync::atomic::AtomicU64,
+    /// Bytes received so far during an active download — read by the onboarding
+    /// status command to show live progress. Reset to 0 when the download ends.
+    pub download_bytes_done: AtomicU64,
+    /// Total expected bytes for the active download. 0 when no download is running.
+    pub download_bytes_total: AtomicU64,
     recorder: Mutex<Option<AudioRecorder>>,
     transcriber: AsyncMutex<Option<Arc<Transcriber>>>,
     swap_guard: AsyncMutex<()>,
@@ -175,6 +180,8 @@ impl AppState {
             current_model: Mutex::new(model),
             downloading: Mutex::new(None),
             download_epoch: std::sync::atomic::AtomicU64::new(0),
+            download_bytes_done: AtomicU64::new(0),
+            download_bytes_total: AtomicU64::new(0),
             recorder: Mutex::new(None),
             transcriber: AsyncMutex::new(None),
             swap_guard: AsyncMutex::new(()),
@@ -276,7 +283,8 @@ impl AppState {
             model,
             move |done, total| {
                 tray::set_download_progress(model, done, total);
-                let _ = &me_progress;
+                me_progress.download_bytes_done.store(done, Ordering::Relaxed);
+                me_progress.download_bytes_total.store(total, Ordering::Relaxed);
             },
             move || me_wanted.download_epoch.load(Ordering::SeqCst) == my_epoch,
         )
@@ -288,6 +296,8 @@ impl AppState {
                 *dl = None;
             }
         }
+        self.download_bytes_done.store(0, Ordering::Relaxed);
+        self.download_bytes_total.store(0, Ordering::Relaxed);
         match result {
             Ok(_) => {
                 info!("start_download({}) complete; model now cached", model.id());
@@ -352,10 +362,15 @@ impl AppState {
         let my_epoch = self.download_epoch.fetch_add(1, Ordering::SeqCst) + 1;
         *self.downloading.lock() = Some(model);
 
+        let me_boot = self.clone();
         let path = ensure_model(
             &self.app,
             model,
-            move |done, total| tray::set_download_progress(model, done, total),
+            move |done, total| {
+                tray::set_download_progress(model, done, total);
+                me_boot.download_bytes_done.store(done, Ordering::Relaxed);
+                me_boot.download_bytes_total.store(total, Ordering::Relaxed);
+            },
             move || true,
         )
         .await;
@@ -366,6 +381,8 @@ impl AppState {
                 *dl = None;
             }
         }
+        self.download_bytes_done.store(0, Ordering::Relaxed);
+        self.download_bytes_total.store(0, Ordering::Relaxed);
         let _ = my_epoch;
         let path = path?;
 
@@ -550,6 +567,7 @@ impl AppState {
                  run={run_ms}ms paste={paste_ms}ms total={total_ms}ms text={trimmed:?}",
                 skill.name
             );
+            let _ = self.settings.set(KEY_HAS_DICTATED, "true");
             tray::set_skill_done(&self.app, &skill.name);
             crate::overlay::skill_done(&self.app, &skill.name, matches!(&skill.kind, skills::SkillKind::Phrase { .. }));
             return Ok(());
@@ -609,6 +627,7 @@ impl AppState {
 
         let t_paste_start = Instant::now();
         paste_text(&trimmed)?;
+        let _ = self.settings.set(KEY_HAS_DICTATED, "true");
         let paste_ms = t_paste_start.elapsed().as_millis() as u64;
         let total_ms = t_release.elapsed().as_millis() as u64;
         let char_count = trimmed.chars().count();
