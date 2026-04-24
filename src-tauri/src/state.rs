@@ -402,6 +402,7 @@ impl AppState {
         let recorder = AudioRecorder::start()?;
         *self.recorder.lock() = Some(recorder);
         self.set_tray(TrayState::Transcribing);
+        crate::overlay::recording(&self.app);
         Ok(())
     }
 
@@ -426,9 +427,11 @@ impl AppState {
         if samples.len() < 16_000 / 4 {
             info!("[latency #{n}] audio={audio_ms}ms — skipped (tap too short)");
             self.set_tray(TrayState::Idle);
+            crate::overlay::hide(&self.app);
             return Ok(());
         }
         self.set_tray(TrayState::Processing);
+        crate::overlay::processing(&self.app);
 
         let transcriber = {
             let guard = self.transcriber.lock().await;
@@ -436,6 +439,7 @@ impl AppState {
         };
         let transcriber = transcriber.ok_or_else(|| {
             self.set_tray(TrayState::Idle);
+            crate::overlay::hide(&self.app);
             anyhow!("transcriber not ready; still loading model")
         })?;
 
@@ -532,6 +536,7 @@ impl AppState {
             if trimmed.is_empty() {
                 info!("[latency #{n}] skill {} produced empty output; skipping paste", skill.name);
                 self.set_tray(TrayState::Idle);
+                crate::overlay::hide(&self.app);
                 return Ok(());
             }
 
@@ -545,6 +550,7 @@ impl AppState {
                 skill.name
             );
             tray::set_skill_done(&self.app, &skill.name);
+            crate::overlay::skill_done(&self.app, &skill.name);
             return Ok(());
         }
 
@@ -596,6 +602,7 @@ impl AppState {
         if trimmed.is_empty() {
             info!("[latency #{n}] audio={audio_ms}ms whisper={whisper_ms}ms — empty transcript");
             self.set_tray(TrayState::Idle);
+            crate::overlay::hide(&self.app);
             return Ok(());
         }
 
@@ -613,6 +620,7 @@ impl AppState {
         );
 
         self.set_tray(TrayState::Transcribed);
+        crate::overlay::transcribed(&self.app);
         Ok(())
     }
 }

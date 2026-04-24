@@ -1,5 +1,6 @@
 mod audio;
 mod commands;
+mod overlay;
 mod paste;
 mod pipeline;
 mod settings;
@@ -116,6 +117,7 @@ pub fn run() {
             app.manage(state.clone());
 
             tray::build_tray(app.handle())?;
+            overlay::build(app.handle())?;
             app.global_shortcut().register(ptt.clone())?;
             info!("registered push-to-talk: Ctrl+Shift+Space");
 
