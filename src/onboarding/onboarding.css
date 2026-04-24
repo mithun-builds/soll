@@ -159,6 +159,7 @@
 
 .ob-step-action-btn {
   margin-top: 4px;
+  align-self: center; /* override button.secondary's flex-start */
 }
 
 .ob-step-extra {
