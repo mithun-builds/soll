@@ -138,6 +138,13 @@ jobs:
 
             app "Soll.app"
 
+            # Remove quarantine flag so macOS opens the app without Gatekeeper warnings
+            postflight do
+              system_command "/usr/bin/xattr",
+                args: ["-dr", "com.apple.quarantine", "#{appdir}/Soll.app"],
+                sudo: false
+            end
+
             zap trash: [
               "~/Library/Application Support/com.soll.app",
               "~/Library/Preferences/com.soll.app.plist",
