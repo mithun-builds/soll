@@ -1,113 +1,140 @@
-# Soll
+# Soll — Voice to text for your Mac
 
-> Open-source, local-first voice dictation. A free alternative to Wispr Flow.
+> Hold a shortcut, speak, release. Your words appear wherever your cursor is — in any app, instantly, privately.
 
-Hold **Ctrl + Shift + Space**, speak, release — polished text pastes into the focused app.
-Everything runs on-device: [whisper.cpp](https://github.com/ggerganov/whisper.cpp) for transcription, [Ollama](https://ollama.com) for optional AI cleanup. No cloud. No accounts. Free forever.
+A free, open-source alternative to [Wispr Flow](https://wisprflow.ai). Everything runs on your Mac — no cloud, no account, no subscription.
 
-## Features
+---
 
-- **Push-to-talk** — hold `Ctrl+Shift+Space` anywhere, release to transcribe and paste
-- **Fully local** — whisper.cpp (Metal-accelerated on Apple Silicon) + Ollama on `127.0.0.1`; no audio leaves the device
-- **AI cleanup** — filler words stripped, casing fixed, LLM preambles removed; graceful fallback to raw transcript if Ollama is unavailable
-- **Skills** — AI-powered voice macros that reshape dictation into a specific format (commit messages, Slack messages, bug reports, …). Say `skill [trigger]` or speak the trigger phrase directly
-- **Phrases** — instant text snippets pasted verbatim with no AI and no latency. Say `phrase [trigger]` or speak the trigger phrase directly
-- **Personal dictionary** — teach Soll brand names, jargon, and acronyms so Whisper gets them right
-- **Smart list formatting** — start with `bullet list …` or `numbered list …` to get formatted output
-- **Self-corrections** — say "actually", "I mean", "no wait", etc. mid-sentence to fix a word without re-recording
-- **Floating status pill** — a non-intrusive pill at the bottom of your screen shows the current state; disappears when idle
-- **Settings UI** — model picker, dictionary editor, skill/phrase builder, and Tips & Tricks pane, all in a native window
+## What it does
+
+- **Hold `⌃⇧Space`** anywhere on your Mac → speak → release → text is pasted at your cursor
+- Works in **any app** — Slack, Notion, Gmail, Terminal, VS Code, anywhere
+- **AI cleanup** removes filler words, fixes punctuation and casing
+- **Skills** — voice-triggered AI actions (e.g. say *"git commit fixed the login bug"* → formatted commit message)
+- **Phrases** — instant text snippets (e.g. say *"my email"* → pastes your email address)
+- Everything runs **100% on-device** — your audio never leaves your Mac
+
+---
+
+## Before you start
+
+You need four things installed. Click each link for the official install page:
+
+| Tool | What it's for | How to install |
+|------|--------------|----------------|
+| **Homebrew** | Mac package manager — installs everything else | [brew.sh](https://brew.sh) |
+| **Rust** | Builds the Soll app | [rustup.rs](https://rustup.rs) |
+| **Node.js** | Builds the UI | [nodejs.org](https://nodejs.org) — download the LTS version |
+| **pnpm** | Node package manager | After Node: run `npm install -g pnpm` |
+| **cmake** | Required by the audio engine | After Homebrew: run `brew install cmake` |
+
+**Optional but recommended:**
+
+| Tool | What it's for | How to install |
+|------|--------------|----------------|
+| **Ollama** | Powers AI cleanup and Skills | [ollama.com](https://ollama.com) — download and install, then run `ollama pull llama3.2:3b` |
+
+---
+
+## Install — step by step
+
+Open **Terminal** (press `⌘Space`, type "Terminal", press Enter) and run these one at a time:
+
+### Step 1 — Install Homebrew
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+*Skip if you already have it — type `brew --version` to check.*
+
+### Step 2 — Install Rust
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+When it finishes, **close Terminal and open a new one** before continuing.
+
+### Step 3 — Install Node.js and pnpm
+```bash
+brew install node
+npm install -g pnpm
+```
+
+### Step 4 — Install cmake
+```bash
+brew install cmake
+```
+
+### Step 5 — Install Ollama and download the AI model *(optional)*
+```bash
+brew install ollama
+ollama pull llama3.2:3b
+```
+
+### Step 6 — Clone Soll
+```bash
+git clone https://github.com/mithun-builds/soll.git
+cd soll
+```
+
+### Step 7 — Install dependencies
+```bash
+pnpm install
+```
+
+### Step 8 — Run Soll
+```bash
+pnpm tauri dev
+```
+
+A small Soll icon appears in your **menu bar** — you're ready.
+
+> **First launch:** macOS will ask for **Microphone** and **Accessibility** permissions. Grant both — Soll needs them to hear you and paste text into other apps.
+
+---
+
+## How to use it
+
+| What you want to do | How |
+|---------------------|-----|
+| Dictate into any app | Hold `⌃⇧Space`, speak, release |
+| Format as a bullet list | Say *"bullet list …"* |
+| Format as a numbered list | Say *"numbered list …"* |
+| Self-correct mid-sentence | Say *"actually"*, *"I mean"*, or *"no wait"* |
+| Use a Skill (AI action) | Say the trigger phrase, e.g. *"git commit fixed the login bug"* |
+| Use a Phrase (instant snippet) | Say the trigger, e.g. *"my calendly link"* |
+| Open Settings | Click the Soll icon in the menu bar |
+
+---
 
 ## Status indicator
 
-A floating pill appears at the bottom of your screen during each dictation:
+A floating pill appears at the bottom of your screen while dictating:
 
 | Pill | Meaning |
 |------|---------|
-| White wave · yellow cursor (animated) — **listening** | Microphone is live, speak now |
-| Yellow wave · white cursor (animated) — **processing…** | Transcribing and running AI cleanup |
-| Static logo · ✓ — **done** | Text pasted, clears in ~1 s |
-| Static logo · ✓ · **skill: name** | A skill or phrase fired — verify the name |
+| Wave animating · yellow cursor | Listening — keep speaking |
+| Yellow wave · white cursor | Processing your speech |
+| ✓ done | Text pasted successfully |
+| ✓ skill: *name* | A Skill or Phrase fired |
 
-**Menu bar icon** — always a static white logo. A small red dot badge appears in the corner while the model is loading or initializing. Once it disappears, Soll is ready.
+---
+
+## Tips
+
+- Hold the shortcut **until you finish your full sentence** — quick taps under ¼ second are ignored
+- Add unusual words, brand names, and acronyms in **Settings → Dictionary** so Whisper gets them right
+- Build your own Skills and Phrases in **Settings → Skills / Phrases**
+- Set your name once in **Settings → General** so Skills can personalise output
+
+---
 
 ## Requirements
 
-- macOS 12+ (Apple Silicon strongly recommended)
-- [Rust](https://rustup.rs)
-- [Node.js 20+](https://nodejs.org) + [pnpm](https://pnpm.io)
-- [cmake](https://cmake.org) (`brew install cmake`) — needed by whisper.cpp
-- [Ollama](https://ollama.com) *(optional — for AI cleanup and Skills)*
+- macOS 13 Ventura or later
+- Apple Silicon (M1/M2/M3/M4) strongly recommended — Whisper runs significantly faster
 
-## Install
-
-```bash
-# 1. Clone and enter
-git clone https://github.com/mithun-builds/soll.git && cd soll
-
-# 2. Install deps
-pnpm install
-
-# 3. (Optional) Install Ollama + pull cleanup model
-brew install ollama
-ollama pull llama3.2:3b
-ollama serve &   # runs in background
-
-# 4. Run in dev mode
-pnpm tauri:dev
-
-# 5. Build a release .dmg
-pnpm tauri:build
-```
-
-On first launch macOS will ask for:
-1. **Microphone** — to capture audio
-2. **Accessibility** — so AppleScript can send Cmd+V
-3. **Input Monitoring** — for the global hotkey
-
-All three are one-time prompts. Soll never sends audio anywhere.
-
-## Architecture
-
-Tauri v2 app — Rust core, React + TypeScript UI. The menu-bar tray icon is always visible; a transparent frameless overlay window hosts the status pill. A separate settings window opens on demand.
-
-```
-┌──────────────────── Soll (menu-bar app) ─────────────────────┐
-│                                                               │
-│  Tray icon (white logo)  ◀── state updates ── Rust core      │
-│  Overlay pill (bottom)   ◀──────────────────┘  │             │
-│                                                 ▼             │
-│                                        ┌────────────────┐    │
-│                                        │  global hotkey │    │
-│                                        │  ⌃⇧Space hold  │    │
-│                                        └───────┬────────┘    │
-│                                                ▼             │
-│                                        ┌────────────────┐    │
-│                                        │  cpal audio    │    │
-│                                        │  16 kHz mono   │    │
-│                                        └───────┬────────┘    │
-│                                                ▼  on release │
-│                                        ┌────────────────┐    │
-│                                        │  whisper-rs    │    │
-│                                        │  (Metal)       │    │
-│                                        └───────┬────────┘    │
-│                                                ▼             │
-│                                        ┌────────────────┐    │
-│                     skill / phrase? ──▶│  skills engine │    │
-│                                        └───────┬────────┘    │
-│                                                ▼             │
-│                                        ┌────────────────┐    │
-│                                        │  Ollama HTTP   │──▶ 127.0.0.1:11434
-│                                        │  (fallback ok) │    │
-│                                        └───────┬────────┘    │
-│                                                ▼             │
-│                                        ┌────────────────┐    │
-│                                        │  clipboard +   │    │
-│                                        │  osascript ⌘V  │    │
-│                                        └────────────────┘    │
-└───────────────────────────────────────────────────────────────┘
-```
+---
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — free to use, modify, and distribute.
