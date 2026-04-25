@@ -6,6 +6,23 @@ A free, open-source alternative to [Wispr Flow](https://wisprflow.ai). Everythin
 
 ---
 
+## Install
+
+### Option A — Homebrew *(easiest)*
+
+```bash
+brew tap mithun-builds/soll
+brew install --cask soll
+```
+
+Homebrew handles everything — downloads, installs, and opens Soll with no warnings.
+
+### Option B — Build from source
+
+See [Build from source](#build-from-source) below if you prefer to build it yourself.
+
+---
+
 ## What it does
 
 - **Hold `⌃⇧Space`** anywhere on your Mac → speak → release → text is pasted at your cursor
@@ -37,7 +54,7 @@ You need four things installed. Click each link for the official install page:
 
 ---
 
-## Install — step by step
+## Build from source
 
 Open **Terminal** (press `⌘Space`, type "Terminal", press Enter) and run these one at a time:
 

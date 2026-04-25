@@ -1,0 +1,146 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-macos:
+    name: Build macOS DMGs
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+
+      # Ad-hoc sign (no Developer ID needed).
+      # The cs.* hardened-runtime entitlements have been removed from
+      # entitlements.plist so ad-hoc signing produces a valid binary.
+      - name: Build Apple Silicon DMG
+        run: pnpm tauri build --target aarch64-apple-darwin
+        env:
+          APPLE_SIGNING_IDENTITY: '-'
+
+      - name: Build Intel DMG
+        run: pnpm tauri build --target x86_64-apple-darwin
+        env:
+          APPLE_SIGNING_IDENTITY: '-'
+
+      - name: Collect & rename DMGs
+        id: dmgs
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          ARM=$(find src-tauri/target/aarch64-apple-darwin/release/bundle/dmg -name "*.dmg" | head -1)
+          X86=$(find src-tauri/target/x86_64-apple-darwin/release/bundle/dmg  -name "*.dmg" | head -1)
+
+          ARM_OUT="Soll-${VERSION}-apple-silicon.dmg"
+          X86_OUT="Soll-${VERSION}-intel.dmg"
+          cp "$ARM" "$ARM_OUT"
+          cp "$X86" "$X86_OUT"
+
+          ARM_SHA=$(shasum -a 256 "$ARM_OUT" | awk '{print $1}')
+          X86_SHA=$(shasum -a 256 "$X86_OUT" | awk '{print $1}')
+
+          echo "arm_dmg=$ARM_OUT"   >> "$GITHUB_OUTPUT"
+          echo "x86_dmg=$X86_OUT"   >> "$GITHUB_OUTPUT"
+          echo "arm_sha=$ARM_SHA"   >> "$GITHUB_OUTPUT"
+          echo "x86_sha=$X86_SHA"   >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Soll ${{ github.ref_name }}"
+          draft: false
+          generate_release_notes: true
+          body: |
+            ## Install via Homebrew (recommended)
+
+            ```bash
+            brew tap mithun-builds/soll
+            brew install --cask soll
+            ```
+
+            ## Manual install
+            1. Download the DMG for your Mac below:
+               - **Apple Silicon** (M1/M2/M3/M4) → `Soll-*-apple-silicon.dmg`
+               - **Intel** → `Soll-*-intel.dmg`
+            2. Open the DMG and drag **Soll.app** into **Applications**
+            3. Open **System Settings → Privacy & Security** → scroll down → click **Open Anyway**
+
+            ## Requirements
+            - macOS 13 Ventura or later
+            - Microphone + Accessibility permissions (Soll will prompt on first use)
+            - [Ollama](https://ollama.com) *(optional — for AI cleanup and Skills)*
+          files: |
+            ${{ steps.dmgs.outputs.arm_dmg }}
+            ${{ steps.dmgs.outputs.x86_dmg }}
+
+      # Update the Homebrew Cask formula in mithun-builds/homebrew-soll
+      - name: Update Homebrew Cask
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ steps.dmgs.outputs.version }}
+          ARM_SHA: ${{ steps.dmgs.outputs.arm_sha }}
+          X86_SHA: ${{ steps.dmgs.outputs.x86_sha }}
+        run: |
+          git clone https://x-access-token:${GH_TOKEN}@github.com/mithun-builds/homebrew-soll.git tap
+          cat > tap/Casks/soll.rb << EOF
+          cask "soll" do
+            version "${VERSION}"
+
+            on_arm do
+              url "https://github.com/mithun-builds/soll/releases/download/v#{version}/Soll-v#{version}-apple-silicon.dmg"
+              sha256 "${ARM_SHA}"
+            end
+
+            on_intel do
+              url "https://github.com/mithun-builds/soll/releases/download/v#{version}/Soll-v#{version}-intel.dmg"
+              sha256 "${X86_SHA}"
+            end
+
+            name "Soll"
+            desc "Voice to text for your Mac — local, private, free"
+            homepage "https://mithun-builds.github.io/soll/"
+
+            app "Soll.app"
+
+            zap trash: [
+              "~/Library/Application Support/com.soll.app",
+              "~/Library/Preferences/com.soll.app.plist",
+              "~/Library/Logs/com.soll.app",
+            ]
+          end
+          EOF
+          cd tap
+          git config user.email "actions@github.com"
+          git config user.name "github-actions"
+          git add Casks/soll.rb
+          git commit -m "Update soll to ${VERSION}"
+          git push

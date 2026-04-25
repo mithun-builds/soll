@@ -8,15 +8,9 @@
   <true/>
   <key>com.apple.security.automation.apple-events</key>
   <true/>
-  <key>com.apple.security.cs.allow-jit</key>
-  <true/>
-  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-  <true/>
-  <key>com.apple.security.cs.disable-library-validation</key>
-  <true/>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Svara needs microphone access to transcribe your speech locally.</string>
+  <string>Soll needs microphone access to transcribe your speech locally.</string>
   <key>NSAppleEventsUsageDescription</key>
-  <string>Svara uses AppleScript to paste transcribed text into the focused app.</string>
+  <string>Soll uses AppleScript to paste transcribed text into the focused app.</string>
 </dict>
 </plist>
