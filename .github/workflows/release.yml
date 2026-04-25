@@ -39,39 +39,47 @@ jobs:
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
 
-      # Ad-hoc sign (no Developer ID needed).
-      # The cs.* hardened-runtime entitlements have been removed from
-      # entitlements.plist so ad-hoc signing produces a valid binary.
-      - name: Build Apple Silicon DMG
+      # Build WITHOUT any code signing — Tauri skips codesign when
+      # APPLE_SIGNING_IDENTITY is unset. We then manually re-sign using
+      # plain ad-hoc (no --options runtime) so macOS accepts the binary
+      # after Homebrew strips the quarantine flag.
+      - name: Build Apple Silicon
         run: pnpm tauri build --target aarch64-apple-darwin
-        env:
-          APPLE_SIGNING_IDENTITY: '-'
 
-      - name: Build Intel DMG
+      - name: Build Intel
         run: pnpm tauri build --target x86_64-apple-darwin
-        env:
-          APPLE_SIGNING_IDENTITY: '-'
 
-      - name: Collect & rename DMGs
+      - name: Re-sign without hardened runtime & repackage DMGs
         id: dmgs
         run: |
           VERSION="${GITHUB_REF_NAME}"
-          ARM=$(find src-tauri/target/aarch64-apple-darwin/release/bundle/dmg -name "*.dmg" | head -1)
-          X86=$(find src-tauri/target/x86_64-apple-darwin/release/bundle/dmg  -name "*.dmg" | head -1)
 
+          ARM_APP=$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -name "*.app" | head -1)
+          X86_APP=$(find src-tauri/target/x86_64-apple-darwin/release/bundle/macos  -name "*.app" | head -1)
+
+          # Strip any existing signature, then re-sign ad-hoc without
+          # --options runtime (hardened runtime). This avoids the
+          # "can't be opened" error on unsigned Macs.
+          codesign --remove-signature "$ARM_APP" 2>/dev/null || true
+          codesign --remove-signature "$X86_APP" 2>/dev/null || true
+          codesign --force --deep --sign - "$ARM_APP"
+          codesign --force --deep --sign - "$X86_APP"
+
+          # Package each app into a DMG
           ARM_OUT="Soll-${VERSION}-apple-silicon.dmg"
           X86_OUT="Soll-${VERSION}-intel.dmg"
-          cp "$ARM" "$ARM_OUT"
-          cp "$X86" "$X86_OUT"
+
+          hdiutil create -volname "Soll" -srcfolder "$ARM_APP" -ov -format UDZO "$ARM_OUT"
+          hdiutil create -volname "Soll" -srcfolder "$X86_APP" -ov -format UDZO "$X86_OUT"
 
           ARM_SHA=$(shasum -a 256 "$ARM_OUT" | awk '{print $1}')
           X86_SHA=$(shasum -a 256 "$X86_OUT" | awk '{print $1}')
 
-          echo "arm_dmg=$ARM_OUT"   >> "$GITHUB_OUTPUT"
-          echo "x86_dmg=$X86_OUT"   >> "$GITHUB_OUTPUT"
-          echo "arm_sha=$ARM_SHA"   >> "$GITHUB_OUTPUT"
-          echo "x86_sha=$X86_SHA"   >> "$GITHUB_OUTPUT"
-          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+          echo "arm_dmg=$ARM_OUT"        >> "$GITHUB_OUTPUT"
+          echo "x86_dmg=$X86_OUT"        >> "$GITHUB_OUTPUT"
+          echo "arm_sha=$ARM_SHA"        >> "$GITHUB_OUTPUT"
+          echo "x86_sha=$X86_SHA"        >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION#v}"    >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -88,21 +96,20 @@ jobs:
             ```
 
             ## Manual install
-            1. Download the DMG for your Mac below:
+            1. Download the DMG for your Mac:
                - **Apple Silicon** (M1/M2/M3/M4) → `Soll-*-apple-silicon.dmg`
                - **Intel** → `Soll-*-intel.dmg`
-            2. Open the DMG and drag **Soll.app** into **Applications**
-            3. Open **System Settings → Privacy & Security** → scroll down → click **Open Anyway**
+            2. Open the DMG → drag **Soll.app** to **Applications**
+            3. **System Settings → Privacy & Security** → scroll down → **Open Anyway**
 
             ## Requirements
             - macOS 13 Ventura or later
-            - Microphone + Accessibility permissions (Soll will prompt on first use)
+            - Microphone + Accessibility permissions (prompted on first use)
             - [Ollama](https://ollama.com) *(optional — for AI cleanup and Skills)*
           files: |
             ${{ steps.dmgs.outputs.arm_dmg }}
             ${{ steps.dmgs.outputs.x86_dmg }}
 
-      # Update the Homebrew Cask formula in mithun-builds/homebrew-soll
       - name: Update Homebrew Cask
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
