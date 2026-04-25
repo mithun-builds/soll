@@ -178,8 +178,10 @@ function deriveSteps(s: OnboardingStatus): StepDef[] {
           ? "Grant Microphone Access"
           : undefined,
       onAction:
-        micState !== "done"
+        micState === "denied"
           ? () => invoke("open_privacy_settings", { section: "Privacy_Microphone" })
+          : micState === "pending"
+          ? () => invoke("request_mic_permission")
           : undefined,
     },
     {

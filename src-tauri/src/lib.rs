@@ -66,6 +66,7 @@ pub fn run() {
             commands::close_onboarding_window,
             onboarding::onboarding_status,
             onboarding::onboarding_dismiss,
+            onboarding::request_mic_permission,
         ])
         .plugin(
             tauri_plugin_log::Builder::new()

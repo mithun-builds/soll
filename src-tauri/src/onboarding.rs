@@ -102,6 +102,58 @@ pub fn onboarding_dismiss(state: State<'_, Arc<AppState>>) -> Result<(), String>
         .map_err(|e| e.to_string())
 }
 
+/// Trigger the macOS microphone permission dialog.
+///
+/// On macOS, an app appears in System Settings → Privacy → Microphone only
+/// *after* it has requested access. This command calls
+/// `[AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio completionHandler:]`
+/// which shows the system prompt. The onboarding frontend polls status every
+/// 2 s and will update automatically once the user grants or denies.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub async fn request_mic_permission() -> Result<(), String> {
+    use block::ConcreteBlock;
+    use objc::runtime::Class;
+    use objc::{msg_send, sel, sel_impl};
+
+    tokio::task::spawn_blocking(|| unsafe {
+        let cls = match Class::get("AVCaptureDevice") {
+            Some(c) => c,
+            None => return,
+        };
+        let ns_cls = match Class::get("NSString") {
+            Some(c) => c,
+            None => return,
+        };
+        // AVMediaTypeAudio = @"soun"
+        let media_type: *mut objc::runtime::Object = msg_send![
+            ns_cls,
+            stringWithUTF8String: b"soun\0".as_ptr() as *const std::os::raw::c_char
+        ];
+        // Only request if not yet determined (status 0 = notDetermined)
+        let status: i64 = msg_send![cls, authorizationStatusForMediaType: media_type];
+        if status != 0 {
+            return; // already granted or denied — no dialog needed
+        }
+        // Fire the system dialog; the frontend poll picks up the new status.
+        let block = ConcreteBlock::new(|_granted: bool| {});
+        let block = block.copy();
+        let _: () = msg_send![
+            cls,
+            requestAccessForMediaType: media_type
+            completionHandler: &*block
+        ];
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+pub async fn request_mic_permission() -> Result<(), String> {
+    Ok(())
+}
+
 // ── permission / connectivity checks ──────────────────────────────────────
 
 #[cfg(target_os = "macos")]
