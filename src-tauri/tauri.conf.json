@@ -30,7 +30,11 @@
     "macOS": {
       "minimumSystemVersion": "12.0",
       "entitlements": "entitlements.plist",
-      "exceptionDomain": ""
+      "exceptionDomain": "",
+      "info": {
+        "NSMicrophoneUsageDescription": "Soll needs microphone access to transcribe your speech locally.",
+        "NSAppleEventsUsageDescription": "Soll uses AppleScript to paste transcribed text into the focused app."
+      }
     }
   }
 }

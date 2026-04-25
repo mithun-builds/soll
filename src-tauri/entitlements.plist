@@ -8,9 +8,5 @@
   <true/>
   <key>com.apple.security.automation.apple-events</key>
   <true/>
-  <key>NSMicrophoneUsageDescription</key>
-  <string>Soll needs microphone access to transcribe your speech locally.</string>
-  <key>NSAppleEventsUsageDescription</key>
-  <string>Soll uses AppleScript to paste transcribed text into the focused app.</string>
 </dict>
 </plist>
