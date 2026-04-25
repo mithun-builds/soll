@@ -29,6 +29,7 @@ use tauri_plugin_global_shortcut::{
     Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
 };
 
+use crate::settings::KEY_ONBOARDING_DISMISSED;
 use crate::state::AppState;
 use crate::tray::TrayState;
 
@@ -136,10 +137,15 @@ pub fn run() {
                 }
             });
 
-            // Always open the onboarding window on startup so it can be reviewed.
-            // TODO: restore first-launch-only guard before shipping:
-            //   only open when KEY_ONBOARDING_DISMISSED != "true"
-            tray::open_onboarding_window(app.handle());
+            // Open the onboarding window on first launch only.
+            // Once the user clicks Done/Close it writes KEY_ONBOARDING_DISMISSED=true
+            // and this check skips it on every subsequent startup.
+            let dismissed = state
+                .settings
+                .get_or_default(KEY_ONBOARDING_DISMISSED, "false");
+            if dismissed != "true" {
+                tray::open_onboarding_window(app.handle());
+            }
 
             Ok(())
         })
