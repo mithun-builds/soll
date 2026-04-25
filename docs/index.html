@@ -144,80 +144,51 @@
       display: flex; justify-content: center;
     }
 
-    /* ── Floating pill (demo) ────────────────────────── */
-    .pill-demo {
-      background: rgba(10,10,18,0.92);
-      border: 1px solid var(--border-s);
-      border-radius: 999px;
-      padding: 10px 24px 10px 18px;
-      display: inline-flex; align-items: center; justify-content: center; gap: 12px;
-      box-shadow: 0 24px 64px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.04);
+    /* ── Logo mark — exact match to app styles.css ──────── */
+    .lm {
+      display: flex; align-items: center; gap: 2px; height: 22px; flex-shrink: 0;
     }
-    .pill-waveform {
-      display: flex; align-items: center; gap: 3px; height: 22px;
+    .lm-bar {
+      width: 2.5px; border-radius: 2px;
+      background: rgba(255,255,255,0.9);
+      flex-shrink: 0; transform-origin: center;
     }
-    .pill-bar {
-      width: 3px; border-radius: 999px;
-      background: var(--fg);
-      transition: background 400ms, opacity 400ms;
+    .lm-bar-animate { animation: lm-wave 0.85s ease-in-out infinite; }
+    @keyframes lm-wave {
+      0%, 100% { transform: scaleY(0.35); opacity: 0.45; }
+      50%       { transform: scaleY(1);   opacity: 1; }
     }
-    /* child 4 is .pill-cursor — skip it; right bars are children 5, 6, 7 */
-    .pill-bar:nth-child(1) { height: 5px;  }
-    .pill-bar:nth-child(2) { height: 9px;  }
-    .pill-bar:nth-child(3) { height: 16px; }
-    .pill-bar:nth-child(5) { height: 13px; }
-    .pill-bar:nth-child(6) { height: 9px;  }
-    .pill-bar:nth-child(7) { height: 5px;  }
-    .pill-cursor {
-      width: 2px; height: 15px; border-radius: 1px;
-      background: var(--accent); margin: 0 2px;
-      position: relative; flex-shrink: 0;
+    .lm-cursor {
+      width: 1.5px; height: 19px; background: #fde047;
+      margin: 0 2px; position: relative; flex-shrink: 0;
     }
-    .pill-cursor::before, .pill-cursor::after {
+    .lm-cursor::before, .lm-cursor::after {
       content: ''; position: absolute; left: 50%; transform: translateX(-50%);
-      width: 6px; height: 1.5px; background: inherit;
+      width: 5px; height: 1.5px; background: #fde047;
     }
-    .pill-cursor::before { top: 0; }
-    .pill-cursor::after  { bottom: 0; }
+    .lm-cursor::before { top: 0; }
+    .lm-cursor::after  { bottom: 0; }
+    .lm-cursor-blink { animation: lm-blink 1s step-end infinite; }
+    @keyframes lm-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+    .lm--listen .lm-bar, .lm--done .lm-bar { background: rgba(255,255,255,0.9); }
+    .lm--listen .lm-cursor, .lm--done .lm-cursor { background: #fde047; }
+    .lm--listen .lm-cursor::before, .lm--listen .lm-cursor::after,
+    .lm--done   .lm-cursor::before, .lm--done   .lm-cursor::after { background: #fde047; }
+    .lm--process .lm-bar { background: #fde047; }
+    .lm--process .lm-cursor { background: #ffffff; }
+    .lm--process .lm-cursor::before, .lm--process .lm-cursor::after { background: #ffffff; }
 
-    @keyframes wave {
-      from { transform: scaleY(0.35); opacity: 0.45; }
-      to   { transform: scaleY(1);    opacity: 1; }
+    /* ── Step pill ───────────────────────────────────────── */
+    .step-pill {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: rgba(0,0,0,0.7); border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 999px; padding: 6px 14px; margin-top: 20px;
     }
-    @keyframes blink { 50% { opacity: 0; } }
-
-    /* listen state — white bars (animating) + yellow cursor (blinking) */
-    .pill-demo.state-listen .pill-bar { background: rgba(255,255,255,0.9); }
-    .pill-demo.state-listen .pill-bar:nth-child(1) { animation: wave 0.85s ease-in-out 0.30s infinite alternate; }
-    .pill-demo.state-listen .pill-bar:nth-child(2) { animation: wave 0.85s ease-in-out 0.15s infinite alternate; }
-    .pill-demo.state-listen .pill-bar:nth-child(3) { animation: wave 0.85s ease-in-out 0.00s infinite alternate; }
-    .pill-demo.state-listen .pill-bar:nth-child(5) { animation: wave 0.85s ease-in-out 0.10s infinite alternate; }
-    .pill-demo.state-listen .pill-bar:nth-child(6) { animation: wave 0.85s ease-in-out 0.22s infinite alternate; }
-    .pill-demo.state-listen .pill-bar:nth-child(7) { animation: wave 0.85s ease-in-out 0.36s infinite alternate; }
-    .pill-demo.state-listen .pill-cursor { background: var(--accent); animation: blink 1s step-end infinite; }
-
-    /* process state — yellow bars (still animating) + white cursor (blinking) */
-    .pill-demo.state-process .pill-bar { background: var(--accent); }
-    .pill-demo.state-process .pill-bar:nth-child(1) { animation: wave 0.85s ease-in-out 0.30s infinite alternate; }
-    .pill-demo.state-process .pill-bar:nth-child(2) { animation: wave 0.85s ease-in-out 0.15s infinite alternate; }
-    .pill-demo.state-process .pill-bar:nth-child(3) { animation: wave 0.85s ease-in-out 0.00s infinite alternate; }
-    .pill-demo.state-process .pill-bar:nth-child(5) { animation: wave 0.85s ease-in-out 0.10s infinite alternate; }
-    .pill-demo.state-process .pill-bar:nth-child(6) { animation: wave 0.85s ease-in-out 0.22s infinite alternate; }
-    .pill-demo.state-process .pill-bar:nth-child(7) { animation: wave 0.85s ease-in-out 0.36s infinite alternate; }
-    .pill-demo.state-process .pill-cursor { background: rgba(255,255,255,0.9); animation: blink 1s step-end infinite; }
-
-    /* done state — white bars (static) + yellow cursor (static) + white check + white text */
-    .pill-demo.state-done .pill-bar { background: rgba(255,255,255,0.9); }
-    .pill-demo.state-done .pill-cursor { background: var(--accent); }
-
-    .pill-label {
-      font-size: 14.5px; font-weight: 600;
-      letter-spacing: -0.01em;
-      min-width: 110px; text-align: left;
-      color: rgba(255,255,255,0.9);
+    .step-pill-label {
+      font-size: 12px; font-weight: 500;
+      color: rgba(255,255,255,0.9); letter-spacing: 0.01em;
     }
-    .pill-check { font-size: 14px; color: rgba(255,255,255,0.9); margin-right: -4px; }
-    .state-process .pill-label { opacity: 0.7; }
+    .step-pill-check { font-size: 12px; font-weight: 700; color: rgba(255,255,255,0.9); }
 
     /* ── Badges (platform / stats) ───────────────────── */
     .badges {
@@ -528,22 +499,6 @@
     </div>
     <p class="hero-note">macOS 13 Ventura or later · Apple Silicon recommended · Free forever</p>
 
-    <!-- Animated pill -->
-    <div class="hero-pill-demo">
-      <div class="pill-demo state-listen" id="pill">
-        <div class="pill-waveform">
-          <div class="pill-bar"></div>
-          <div class="pill-bar"></div>
-          <div class="pill-bar"></div>
-          <div class="pill-cursor"></div>
-          <div class="pill-bar"></div>
-          <div class="pill-bar"></div>
-          <div class="pill-bar"></div>
-        </div>
-        <span class="pill-label" id="pill-label">listening...</span>
-      </div>
-    </div>
-
     <div class="badges">
       <span class="badge"><span class="badge-dot"></span>100% on-device</span>
       <span class="badge"><span class="badge-dot"></span>Works in any app</span>
@@ -694,20 +649,57 @@
       <div class="step reveal">
         <div class="step-num">1</div>
         <div class="step-title">Hold the shortcut</div>
-        <div class="step-desc">Hold ⌃⇧Space anywhere on your Mac. The floating pill appears at the bottom of the screen.</div>
+        <div class="step-desc">Hold ⌃⇧Space anywhere on your Mac.</div>
         <div class="step-kbd">
           <span class="kbd">⌃</span><span class="kbd">⇧</span><span class="kbd">Space</span>
+        </div>
+        <div class="step-pill">
+          <div class="lm lm--listen">
+            <div class="lm-bar lm-bar-animate" style="height:4px;animation-delay:0.30s"></div>
+            <div class="lm-bar lm-bar-animate" style="height:8px;animation-delay:0.15s"></div>
+            <div class="lm-bar lm-bar-animate" style="height:15px;animation-delay:0s"></div>
+            <div class="lm-cursor lm-cursor-blink"></div>
+            <div class="lm-bar lm-bar-animate" style="height:13px;animation-delay:0.10s"></div>
+            <div class="lm-bar lm-bar-animate" style="height:8px;animation-delay:0.22s"></div>
+            <div class="lm-bar lm-bar-animate" style="height:4px;animation-delay:0.36s"></div>
+          </div>
+          <span class="step-pill-label">listening...</span>
         </div>
       </div>
       <div class="step reveal" style="transition-delay:100ms">
         <div class="step-num">2</div>
         <div class="step-title">Speak naturally</div>
-        <div class="step-desc">Talk at your normal pace. The waveform shows Soll is listening. Say a skill or phrase name to trigger an action.</div>
+        <div class="step-desc">Talk at your normal pace. Say a skill or phrase name to trigger an action.</div>
+        <div class="step-pill">
+          <div class="lm lm--listen">
+            <div class="lm-bar lm-bar-animate" style="height:4px;animation-delay:0.30s"></div>
+            <div class="lm-bar lm-bar-animate" style="height:8px;animation-delay:0.15s"></div>
+            <div class="lm-bar lm-bar-animate" style="height:15px;animation-delay:0s"></div>
+            <div class="lm-cursor lm-cursor-blink"></div>
+            <div class="lm-bar lm-bar-animate" style="height:13px;animation-delay:0.10s"></div>
+            <div class="lm-bar lm-bar-animate" style="height:8px;animation-delay:0.22s"></div>
+            <div class="lm-bar lm-bar-animate" style="height:4px;animation-delay:0.36s"></div>
+          </div>
+          <span class="step-pill-label">listening...</span>
+        </div>
       </div>
       <div class="step reveal" style="transition-delay:200ms">
         <div class="step-num">3</div>
         <div class="step-title">Text appears</div>
-        <div class="step-desc">Release the shortcut. Soll transcribes, optionally cleans up, and pastes the text at your cursor — in any app.</div>
+        <div class="step-desc">Release the shortcut. Soll transcribes, cleans up, and pastes at your cursor — in any app.</div>
+        <div class="step-pill">
+          <div class="lm lm--done">
+            <div class="lm-bar" style="height:4px"></div>
+            <div class="lm-bar" style="height:8px"></div>
+            <div class="lm-bar" style="height:15px"></div>
+            <div class="lm-cursor"></div>
+            <div class="lm-bar" style="height:13px"></div>
+            <div class="lm-bar" style="height:8px"></div>
+            <div class="lm-bar" style="height:4px"></div>
+          </div>
+          <span class="step-pill-check">✓</span>
+          <span class="step-pill-label">done</span>
+        </div>
       </div>
     </div>
   </div>
@@ -804,36 +796,6 @@
   window.addEventListener('scroll', () => {
     nav.classList.toggle('scrolled', window.scrollY > 20);
   }, { passive: true });
-
-  // ── Pill animation: listening → processing → done → listening…
-  const pill  = document.getElementById('pill');
-  const label = document.getElementById('pill-label');
-  const pillCheck = document.createElement('span');
-  pillCheck.className = 'pill-check';
-  pillCheck.textContent = '✓';
-
-  const states = [
-    { cls: 'state-listen',  text: 'listening...',  duration: 2800 },
-    { cls: 'state-process', text: 'processing...', duration: 1400 },
-    { cls: 'state-done',    text: 'done',          duration: 1200, check: true },
-  ];
-  let si = 0;
-
-  function nextState() {
-    const s = states[si % states.length];
-    pill.className = `pill-demo ${s.cls}`;
-    if (s.check) {
-      label.textContent = '';
-      label.prepend(pillCheck);
-      label.append(' done');
-    } else {
-      label.innerHTML = '';
-      label.textContent = s.text;
-    }
-    si++;
-    setTimeout(nextState, s.duration);
-  }
-  setTimeout(nextState, states[0].duration);
 
   // ── Scroll reveal
   const io = new IntersectionObserver((entries) => {
