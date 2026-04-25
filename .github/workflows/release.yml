@@ -57,6 +57,17 @@ jobs:
           ARM_APP=$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -name "*.app" | head -1)
           X86_APP=$(find src-tauri/target/x86_64-apple-darwin/release/bundle/macos  -name "*.app" | head -1)
 
+          # Inject macOS usage description strings into Info.plist.
+          # Tauri doesn't support these via config, so we patch after build.
+          # These are required for macOS to show the mic permission dialog.
+          for APP in "$ARM_APP" "$X86_APP"; do
+            PLIST="$APP/Contents/Info.plist"
+            /usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string 'Soll needs microphone access to transcribe your speech locally.'" "$PLIST" 2>/dev/null || \
+            /usr/libexec/PlistBuddy -c "Set :NSMicrophoneUsageDescription 'Soll needs microphone access to transcribe your speech locally.'" "$PLIST"
+            /usr/libexec/PlistBuddy -c "Add :NSAppleEventsUsageDescription string 'Soll uses AppleScript to paste transcribed text into the focused app.'" "$PLIST" 2>/dev/null || \
+            /usr/libexec/PlistBuddy -c "Set :NSAppleEventsUsageDescription 'Soll uses AppleScript to paste transcribed text into the focused app.'" "$PLIST"
+          done
+
           # Strip any existing signature, then re-sign ad-hoc without
           # --options runtime (hardened runtime). This avoids the
           # "can't be opened" error on unsigned Macs.
