@@ -23,6 +23,50 @@ See [Build from source](#build-from-source) below if you prefer to build it your
 
 ---
 
+## Update
+
+If you installed via Homebrew, get the latest release with:
+
+```bash
+brew update && brew upgrade --cask soll
+```
+
+You can run this while Soll is open — brew quits the running app, swaps in the new `.app`, and you can relaunch from the menu bar / Spotlight.
+
+If you downloaded the DMG manually, [grab the newer DMG from the Releases page](https://github.com/mithun-builds/soll/releases), quit Soll, and drag the new app over your existing `/Applications/Soll.app`.
+
+Soll itself doesn't auto-update — you choose when to upgrade.
+
+---
+
+## Uninstall
+
+If you installed via Homebrew:
+
+```bash
+brew uninstall --cask soll
+brew untap mithun-builds/soll        # optional, removes the tap
+```
+
+If you installed manually (DMG):
+
+```bash
+rm -rf /Applications/Soll.app
+```
+
+To wipe **everything** Soll left behind — settings, downloaded models, dictionary, skills, granted permissions — run these too:
+
+```bash
+rm -rf "$HOME/Library/Application Support/com.soll.app"
+rm -rf "$HOME/Library/Logs/com.soll.app"
+tccutil reset Microphone com.soll.app
+tccutil reset Accessibility com.soll.app
+```
+
+Ollama and its models are independent — Soll never installs them — so they aren't touched. Remove them separately if you want.
+
+---
+
 ## What it does
 
 - **Hold `⌃⇧Space`** anywhere on your Mac → speak → release → text is pasted at your cursor

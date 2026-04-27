@@ -156,6 +156,12 @@ jobs:
                 sudo: false
             end
 
+            # Brew runs this on \`uninstall --cask\` AND on \`upgrade --cask\`
+            # (upgrade is uninstall-then-install under the hood). Quitting the
+            # running app first means the user can run \`brew upgrade --cask soll\`
+            # while Soll is open and brew handles it cleanly.
+            uninstall quit: "com.soll.app"
+
             zap trash: [
               "~/Library/Application Support/com.soll.app",
               "~/Library/Preferences/com.soll.app.plist",

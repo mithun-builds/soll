@@ -198,10 +198,17 @@ pub async fn ensure_model(
         // (typically <64 KB, well under 100 ms on a hot connection).
         if !still_wanted() {
             drop(file);
-            // User-driven cancel deletes the partial so the next click starts
-            // fresh; process kill (no cancel signal) leaves it for resume.
-            let _ = tokio::fs::remove_file(&tmp).await;
-            info!("cancelled {} at {} / {} bytes", model.id(), done, total);
+            // Keep the .part on disk. When the user comes back to this model
+            // — by toggling it on again, switching back from another, or
+            // restarting the app — the next ensure_model call sees the file
+            // and resumes via Range, instead of starting from byte 0. To
+            // wipe a partial explicitly, the user clicks "Delete download",
+            // which goes through model_delete and removes both .bin and
+            // .part together.
+            info!(
+                "cancelled {} at {} / {} bytes (.part preserved for resume)",
+                model.id(), done, total
+            );
             return Err(anyhow!(CANCELLED_MSG));
         }
         let chunk = chunk.context("download chunk")?;

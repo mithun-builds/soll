@@ -318,8 +318,12 @@ pub fn model_cancel_download(state: State<'_, Arc<AppState>>) {
     state.download_epoch.fetch_add(1, Ordering::SeqCst);
 }
 
-/// Delete a downloaded Whisper model file from disk. Used by the onboarding
-/// "toggle off" flow to let users start over.
+/// Delete a downloaded Whisper model file from disk, plus any partial
+/// download left over from a cancelled fetch. The cancel path in
+/// `ensure_model` deliberately preserves `.part` files so re-clicking a
+/// model resumes from where it left off — but the user-facing Delete
+/// button needs to wipe both, otherwise "delete + redownload" would
+/// surprise-resume an old partial.
 #[tauri::command]
 pub fn model_delete(
     id: String,
@@ -333,6 +337,8 @@ pub fn model_delete(
         .map_err(|e| e.to_string())?
         .join("models");
     let path = dir.join(model.filename());
+    let part = path.with_extension("bin.part");
+    let _ = std::fs::remove_file(&part);
     if path.exists() {
         std::fs::remove_file(&path).map_err(|e| e.to_string())?;
     }
