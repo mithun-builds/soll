@@ -57,6 +57,7 @@ log = "0.4"
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26"
 objc = "0.2"
+block = "0.1"
 
 [[example]]
 name = "bench_pipeline"
@@ -68,3 +69,10 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# Silence the noisy cfg-check warnings that originate inside `objc 0.2`'s
+# `msg_send!`/`sel_impl!` macros — the crate uses `#[cfg(feature = "cargo-clippy")]`
+# internally, which Rust 1.80+ flags as an unexpected feature. The proper
+# fix is migrating to objc2; this is a holding pattern until then.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }

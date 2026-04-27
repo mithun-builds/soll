@@ -176,6 +176,7 @@ fn center_on_cursor_screen(app: &AppHandle, w: &tauri::WebviewWindow) {
 /// Set collection behavior and mouse-event passthrough on the NSWindow.
 /// Only passes u64 and BOOL (i8) to msg_send! — no structs, no crash risk.
 #[cfg(target_os = "macos")]
+#[allow(deprecated)]
 fn apply_panel_style(w: &tauri::WebviewWindow) {
     use cocoa::base::{id, YES};
     use objc::{msg_send, sel, sel_impl};
@@ -196,6 +197,7 @@ fn apply_panel_style(w: &tauri::WebviewWindow) {
 /// Show without activating our app or stealing keyboard focus.
 /// No arguments, void return — safe with objc 0.2's msg_send!.
 #[cfg(target_os = "macos")]
+#[allow(deprecated)]
 fn order_front_regardless(w: &tauri::WebviewWindow) {
     use cocoa::base::id;
     use objc::{msg_send, sel, sel_impl};

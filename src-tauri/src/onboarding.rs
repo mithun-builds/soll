@@ -39,6 +39,12 @@ pub struct OnboardingStatus {
     pub accessibility: bool,
     // Step 4 — Ollama
     pub ollama_running: bool,
+    /// True when Ollama is running AND the currently active model has been pulled.
+    pub ollama_active_model_pulled: bool,
+    /// True when an Ollama installation is detected on disk, regardless of
+    /// whether it's currently running. Lets the wizard show "Open Ollama"
+    /// instead of the install instructions when the user has it but quit it.
+    pub ollama_installed: bool,
     // Step 5 — First dictation
     pub has_dictated: bool,
     // Step 6 — Skills (optional)
@@ -75,6 +81,13 @@ pub async fn onboarding_status(
     let mic_permission = check_mic_permission();
     let accessibility = check_accessibility();
     let ollama_running = check_ollama_running().await;
+    let ollama_installed = check_ollama_installed();
+    let ollama_active_model_pulled = if ollama_running {
+        let active = state.ollama.active_model();
+        state.ollama.list_pulled_tags().await.contains(&active)
+    } else {
+        false
+    };
     let has_dictated =
         state.settings.get_or_default(KEY_HAS_DICTATED, "false") == "true";
     let has_skills = !state.skills.lock().is_empty();
@@ -88,6 +101,8 @@ pub async fn onboarding_status(
         mic_permission,
         accessibility,
         ollama_running,
+        ollama_active_model_pulled,
+        ollama_installed,
         has_dictated,
         has_skills,
         dismissed,
@@ -95,48 +110,95 @@ pub async fn onboarding_status(
 }
 
 #[tauri::command]
-pub fn onboarding_dismiss(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+pub fn onboarding_dismiss(
+    state: State<'_, Arc<AppState>>,
+    app: AppHandle,
+) -> Result<(), String> {
     state
         .settings
         .set(KEY_ONBOARDING_DISMISSED, "true")
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // The user just confirmed they're done — clear the red indicator
+    // immediately so the tray icon goes plain on the next paint.
+    crate::tray::set_setup_needed(&app, false);
+    Ok(())
 }
 
-/// Trigger the macOS microphone permission dialog.
+/// Trigger the macOS microphone permission dialog via AVFoundation.
 ///
-/// On macOS, attempting to open a cpal input stream triggers the system
-/// microphone permission dialog. No block crate or ObjC memory management
-/// needed — cpal goes through Core Audio which handles TCC natively.
-/// The onboarding frontend polls status every 2 s and updates automatically.
+/// Uses AVCaptureDevice requestAccessForMediaType:completionHandler: — the only
+/// reliable way to surface the TCC dialog on macOS 15+. The block is
+/// heap-allocated via .copy() and then forgotten so AVFoundation owns its
+/// lifetime; the 2-second frontend poll picks up the granted state.
 #[tauri::command]
-pub async fn request_mic_permission() -> Result<(), String> {
-    tokio::task::spawn_blocking(|| {
-        use cpal::traits::{DeviceTrait, HostTrait};
-        let host = cpal::default_host();
-        if let Some(device) = host.default_input_device() {
-            if let Ok(config) = device.default_input_config() {
-                // Building an input stream is enough to trigger the macOS
-                // permission dialog — we don't need to start it.
-                let _ = device.build_input_stream(
-                    &config.config(),
-                    |_: &[f32], _| {},
-                    |_| {},
-                    None,
-                );
-            }
+pub fn request_mic_permission() {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        use std::os::raw::{c_char, c_void};
+        use block::ConcreteBlock;
+        use objc::runtime::Class;
+        use objc::{msg_send, sel, sel_impl};
+
+        extern "C" {
+            fn dlopen(filename: *const c_char, flag: i32) -> *mut c_void;
         }
-    })
-    .await
-    .map_err(|e| e.to_string())
+        dlopen(
+            b"/System/Library/Frameworks/AVFoundation.framework/AVFoundation\0".as_ptr()
+                as *const c_char,
+            1,
+        );
+
+        let cls = match Class::get("AVCaptureDevice") {
+            Some(c) => c,
+            None => return,
+        };
+        let ns_cls = match Class::get("NSString") {
+            Some(c) => c,
+            None => return,
+        };
+        let media_type: *mut objc::runtime::Object = msg_send![
+            ns_cls,
+            stringWithUTF8String: b"soun\0".as_ptr() as *const c_char
+        ];
+
+        // .copy() heap-allocates the block so AVFoundation can retain it safely.
+        // std::mem::forget transfers ownership to ObjC ARC — no use-after-free.
+        let block = ConcreteBlock::new(|_granted: bool| {});
+        let block = block.copy();
+        let _: () = msg_send![
+            cls,
+            requestAccessForMediaType: media_type
+            completionHandler: &*block
+        ];
+        std::mem::forget(block);
+    }
+}
+
+/// Open System Settings → Privacy & Security → Accessibility.
+///
+/// Earlier this called `AXIsProcessTrustedWithOptions(prompt: true)` to surface
+/// the macOS "Soll wants to control this computer" sheet. The side effect was
+/// nasty: that call also refreshes the running process's trust cache, so if
+/// any prior build of Soll had been granted, the next poll would flip the
+/// step to "Done" instantly — the progress bar moved without the user
+/// actually doing anything in Settings. Bypassing the prompt entirely keeps
+/// the step's "Done" state honest: it only goes green after the user
+/// explicitly toggles Soll on in Settings *and* restarts (because
+/// AXIsProcessTrusted is cached for the process lifetime).
+#[tauri::command]
+pub fn request_accessibility_permission() {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+            .spawn();
+    }
 }
 
 // ── permission / connectivity checks ──────────────────────────────────────
 
 #[cfg(target_os = "macos")]
-fn check_accessibility() -> bool {
-    // AXIsProcessTrusted() is a C function in ApplicationServices, which is
-    // linked transitively by AppKit / Tauri on macOS. Returns false until the
-    // user grants the permission in System Settings › Privacy › Accessibility.
+pub(crate) fn check_accessibility() -> bool {
     extern "C" {
         fn AXIsProcessTrusted() -> u8;
     }
@@ -144,20 +206,32 @@ fn check_accessibility() -> bool {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn check_accessibility() -> bool {
+pub(crate) fn check_accessibility() -> bool {
     true
 }
 
 #[cfg(target_os = "macos")]
-fn check_mic_permission() -> PermState {
+pub(crate) fn check_mic_permission() -> PermState {
     // [AVCaptureDevice authorizationStatusForMediaType: AVMediaTypeAudio]
     // AVMediaTypeAudio = NSString @"soun"
     // AVAuthorizationStatus values: 0=notDetermined 1=restricted 2=denied 3=authorized
     //
-    // We use Class::get (returns Option) so that if AVFoundation hasn't been
-    // loaded into the process yet, we return Unknown instead of panicking.
+    // cpal uses CoreAudio, not AVFoundation — so AVCaptureDevice is never
+    // loaded into the process automatically. Force-load AVFoundation via
+    // dlopen before calling Class::get, otherwise it always returns None.
     use objc::runtime::Class;
     use objc::{msg_send, sel, sel_impl};
+
+    unsafe {
+        extern "C" {
+            fn dlopen(
+                filename: *const std::os::raw::c_char,
+                flag: std::os::raw::c_int,
+            ) -> *mut std::os::raw::c_void;
+        }
+        let path = b"/System/Library/Frameworks/AVFoundation.framework/AVFoundation\0";
+        dlopen(path.as_ptr() as *const _, 1 /* RTLD_LAZY */);
+    }
 
     let status: i64 = unsafe {
         let cls = match Class::get("AVCaptureDevice") {
@@ -184,13 +258,38 @@ fn check_mic_permission() -> PermState {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn check_mic_permission() -> PermState {
+pub(crate) fn check_mic_permission() -> PermState {
     PermState::Granted
+}
+
+/// True when an Ollama installation exists on disk, regardless of whether
+/// the daemon is currently up. Detects the .app bundle (DMG/Cask install)
+/// and the CLI (Homebrew install on Apple Silicon or Intel).
+pub(crate) fn check_ollama_installed() -> bool {
+    const CANDIDATES: &[&str] = &[
+        "/Applications/Ollama.app",
+        "/opt/homebrew/bin/ollama",
+        "/usr/local/bin/ollama",
+    ];
+    CANDIDATES
+        .iter()
+        .any(|p| std::path::Path::new(p).exists())
+}
+
+/// Launch the Ollama .app via LaunchServices. No-op (well, an error logged
+/// by `open`) when Ollama is CLI-only; the frontend should keep that case
+/// on the "show install instructions" code path.
+#[tauri::command]
+pub fn open_ollama() {
+    let _ = std::process::Command::new("open")
+        .arg("-a")
+        .arg("Ollama")
+        .spawn();
 }
 
 /// Ping Ollama with a 1-second timeout. Called on every poll tick so the
 /// timeout must be well under the 2 s polling interval.
-async fn check_ollama_running() -> bool {
+pub(crate) async fn check_ollama_running() -> bool {
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(1))
         .build()
@@ -206,8 +305,3 @@ async fn check_ollama_running() -> bool {
         .unwrap_or(false)
 }
 
-// ── window helper (called from tray and lib) ───────────────────────────────
-
-pub fn open_window(app: &AppHandle) {
-    crate::tray::open_onboarding_window(app);
-}

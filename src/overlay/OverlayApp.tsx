@@ -91,7 +91,7 @@ function Processing() {
   return (
     <div className="overlay-row">
       <LogoMark waveAnimate cursorBlink variant="process" />
-      <span className="overlay-label subtle">processing…</span>
+      <span className="overlay-label">processing…</span>
     </div>
   );
 }

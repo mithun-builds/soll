@@ -1,5 +1,4 @@
 /* ── Onboarding wizard window ───────────────────────────────────────────── */
-/* All CSS variables come from styles.css which is imported in main.tsx.    */
 
 .ob-shell {
   display: flex;
@@ -30,7 +29,7 @@
 }
 
 .ob-logo {
-  width: 46px;   /* 28:22 viewBox × (36px height) = 45.8 → 46 */
+  width: 46px;
   height: 36px;
   flex-shrink: 0;
   color: #ffffff;
@@ -63,7 +62,7 @@
 .ob-progress-bar {
   flex: 1;
   height: 4px;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255,255,255,0.08);
   border-radius: 999px;
   overflow: hidden;
 }
@@ -103,7 +102,6 @@
   width: 100%;
 }
 
-/* Slide-in animations */
 @keyframes slide-from-right {
   from { opacity: 0; transform: translateX(32px); }
   to   { opacity: 1; transform: translateX(0); }
@@ -114,15 +112,14 @@
 }
 
 .ob-slide--enter-right {
-  animation: slide-from-right 260ms cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+  animation: slide-from-right 260ms cubic-bezier(0.25,0.46,0.45,0.94) both;
 }
 .ob-slide--enter-left {
-  animation: slide-from-left 260ms cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+  animation: slide-from-left 260ms cubic-bezier(0.25,0.46,0.45,0.94) both;
 }
 
 /* ── Step content ───────────────────────────────────────────────────────── */
 
-/* Icon wrapper — consistent sizing for SVG and image icons */
 .ob-step-icon-wrap {
   display: flex;
   align-items: center;
@@ -132,14 +129,12 @@
   margin-bottom: 4px;
 }
 
-/* Minimal white SVG line icon */
 .ob-step-svg {
   width: 48px;
   height: 48px;
   color: #ffffff;
 }
 
-/* Ollama PNG logo — invert black→white for dark background */
 .ob-step-icon-img {
   width: 46px;
   height: auto;
@@ -175,16 +170,57 @@
   margin: 0;
 }
 
-button.ob-step-action-btn {
-  margin-top: 4px;
-  align-self: center !important; /* beats button.secondary's align-self:flex-start */
-}
-
 .ob-step-extra {
   margin-top: 4px;
   text-align: left;
   width: 100%;
   max-width: 380px;
+}
+
+/* ── Toggle switch ──────────────────────────────────────────────────────── */
+
+.ob-toggle {
+  position: relative;
+  width: 48px;
+  height: 28px;
+  border-radius: 14px;
+  background: rgba(255,255,255,0.1);
+  border: 1.5px solid rgba(255,255,255,0.14);
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+  margin-top: 4px;
+  transition: background 200ms, border-color 200ms;
+}
+
+.ob-toggle::after {
+  content: '';
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.45);
+  top: 2px;
+  left: 2px;
+  transition: transform 200ms ease, background 200ms;
+}
+
+.ob-toggle--on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.ob-toggle--on::after {
+  background: #1a1a1a;
+  transform: translateX(20px);
+}
+
+.ob-toggle:disabled {
+  cursor: default;
+}
+
+.ob-toggle:disabled:not(.ob-toggle--on) {
+  opacity: 0.35;
 }
 
 /* ── Status badge ───────────────────────────────────────────────────────── */
@@ -199,25 +235,10 @@ button.ob-step-action-btn {
   white-space: nowrap;
 }
 
-.ob-badge--done {
-  background: rgba(34, 197, 94, 0.14);
-  color: #4ade80;
-}
-
-.ob-badge--in-progress {
-  background: rgba(253, 224, 71, 0.14);
-  color: var(--accent);
-}
-
-.ob-badge--denied {
-  background: rgba(239, 68, 68, 0.12);
-  color: #f87171;
-}
-
-.ob-badge--pending {
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--fg-subtle);
-}
+.ob-badge--done       { background: rgba(253,224,71,0.12); color: var(--accent); }
+.ob-badge--in-progress{ background: rgba(253,224,71,0.14); color: var(--accent); }
+.ob-badge--denied     { background: rgba(239,68,68,0.12);  color: #f87171; }
+.ob-badge--pending    { background: rgba(255,255,255,0.06); color: var(--fg-subtle); }
 
 /* ── Optional tag ───────────────────────────────────────────────────────── */
 
@@ -226,7 +247,7 @@ button.ob-step-action-btn {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--fg-subtle);
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(255,255,255,0.06);
   padding: 2px 6px;
   border-radius: 4px;
   font-weight: 500;
@@ -243,13 +264,6 @@ button.ob-step-action-btn {
   gap: 12px;
 }
 
-.ob-nav-center {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 7px;
-}
-
 /* ── Step dots ──────────────────────────────────────────────────────────── */
 
 .ob-dots {
@@ -262,21 +276,15 @@ button.ob-step-action-btn {
   width: 7px;
   height: 7px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.15);
+  background: rgba(255,255,255,0.15);
   border: none;
   padding: 0;
   cursor: pointer;
-  transition: all 280ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  transition: all 280ms cubic-bezier(0.25,0.46,0.45,0.94);
 }
 
-.ob-dot--done {
-  background: rgba(74, 222, 128, 0.55);
-}
-
-.ob-dot--active {
-  width: 20px;
-  background: var(--accent);
-}
+.ob-dot--done   { background: rgba(253,224,71,0.5); }
+.ob-dot--active { width: 20px; background: var(--accent); }
 
 /* ── Nav buttons ────────────────────────────────────────────────────────── */
 
@@ -306,12 +314,12 @@ button.ob-step-action-btn {
 
 .ob-nav-btn--next {
   color: var(--accent);
-  border-color: rgba(253, 224, 71, 0.3);
+  border-color: rgba(253,224,71,0.3);
 }
 
 .ob-nav-btn--next:hover {
-  border-color: rgba(253, 224, 71, 0.6) !important;
-  background: rgba(253, 224, 71, 0.05) !important;
+  border-color: rgba(253,224,71,0.6) !important;
+  background: rgba(253,224,71,0.05) !important;
 }
 
 .ob-nav-btn--primary {
@@ -326,14 +334,260 @@ button.ob-step-action-btn {
   opacity: 0.9;
 }
 
+/* ── Model picker (cards with embedded toggles) ─────────────────────────── */
+
+.ob-model-picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+  max-width: 380px;
+  margin: 0 auto;
+}
+
+.ob-model-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: rgba(255,255,255,0.04);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 10px 11px;
+  font-family: inherit;
+  border-radius: 7px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+
+.ob-model-card:hover:not(:disabled) {
+  background: rgba(255,255,255,0.08);
+  border-color: var(--fg-subtle);
+}
+
+.ob-model-card--on {
+  background: rgba(253,224,71,0.08);
+  border-color: var(--accent);
+}
+
+.ob-model-card--on:hover:not(:disabled) {
+  background: rgba(253,224,71,0.12);
+}
+
+.ob-model-card:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.ob-model-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ob-model-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+
+.ob-model-card-size {
+  font-size: 11px;
+  color: var(--fg-subtle);
+}
+
+.ob-model-card-rec {
+  font-size: 10px;
+  color: var(--accent);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  margin-top: 1px;
+}
+
+.ob-model-card-pulled {
+  font-size: 10px;
+  color: var(--fg-subtle);
+  margin-top: 1px;
+}
+
+.ob-model-card-toggle {
+  position: relative;
+  width: 32px;
+  height: 20px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.1);
+  border: 1.5px solid rgba(255,255,255,0.14);
+  flex-shrink: 0;
+  transition: background 200ms, border-color 200ms;
+}
+
+.ob-model-card-toggle::after {
+  content: '';
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.45);
+  top: 1.5px;
+  left: 1.5px;
+  transition: transform 200ms ease, background 200ms;
+}
+
+.ob-model-card-toggle--on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.ob-model-card-toggle--on::after {
+  background: #1a1a1a;
+  transform: translateX(11px);
+}
+
+/* Stack used when a step needs more than one block of extra UI */
+.ob-step-extra-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── Dictation test (step 5) ────────────────────────────────────────────── */
+
+.ob-dictation-test {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  width: 100%;
+  max-width: 380px;
+  margin: 0 auto;
+}
+
+.ob-dictation-input {
+  width: 100%;
+  /* Match macOS System Settings text fields — clearly lighter than the page
+     so the input is unmistakably a focusable affordance, not a passive panel. */
+  background: rgba(255,255,255,0.08);
+  color: var(--fg);
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 7px;
+  padding: 10px 12px;
+  font-family: inherit;
+  font-size: 13.5px;
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 84px;
+  box-sizing: border-box;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.ob-dictation-input:hover:not(:disabled) {
+  background: rgba(255,255,255,0.1);
+}
+
+.ob-dictation-input:focus {
+  outline: none;
+  background: rgba(255,255,255,0.1);
+  border-color: var(--accent);
+}
+
+.ob-dictation-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ob-dictation-input::placeholder {
+  color: var(--fg-subtle);
+}
+
+.ob-dictation-blockers {
+  background: rgba(239,68,68,0.08);
+  border: 1px solid rgba(239,68,68,0.25);
+  border-radius: 7px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--fg);
+  text-align: left;
+}
+
+.ob-dictation-blockers strong {
+  color: #f87171;
+  font-weight: 600;
+  display: block;
+  margin-bottom: 4px;
+}
+
+.ob-dictation-blockers ul {
+  margin: 0;
+  padding-left: 18px;
+  list-style: disc;
+}
+
+.ob-dictation-blockers li {
+  color: var(--fg-subtle);
+  line-height: 1.55;
+}
+
+.ob-dictation-hint {
+  font-size: 11.5px;
+  color: var(--fg-subtle);
+  text-align: center;
+  margin: 0;
+  font-style: italic;
+}
+
+/* ── Toggle note + action button ────────────────────────────────────────── */
+
+.ob-toggle-note {
+  font-size: 11px;
+  color: var(--fg-subtle);
+  text-align: center;
+  max-width: 320px;
+  line-height: 1.4;
+  margin: 0;
+  font-style: italic;
+}
+
+.ob-action-btn {
+  background: rgba(255,255,255,0.06);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 5px 11px;
+  font-size: 11.5px;
+  font-family: inherit;
+  border-radius: 5px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.ob-action-btn:hover {
+  background: rgba(255,255,255,0.1);
+  border-color: var(--fg-subtle);
+}
+
+.ob-action-btn--danger {
+  color: #f87171;
+  border-color: rgba(239,68,68,0.3);
+}
+
+.ob-action-btn--danger:hover {
+  background: rgba(239,68,68,0.1);
+  border-color: rgba(239,68,68,0.5);
+}
 
 /* ── Ollama collapsible ─────────────────────────────────────────────────── */
 
 .ob-ollama-wrap {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 6px;
   width: 100%;
+  max-width: 380px;
+  margin: 0 auto;
 }
 
 .ob-ollama-toggle {
@@ -344,21 +598,23 @@ button.ob-step-action-btn {
   font-family: inherit;
   cursor: pointer;
   padding: 0;
-  text-align: left;
+  text-align: center;
   font-weight: 500;
 }
-.ob-ollama-toggle:hover {
-  opacity: 0.8;
-}
+
+.ob-ollama-toggle:hover { opacity: 0.8; }
 
 .ob-ollama-instructions {
-  background: rgba(0, 0, 0, 0.25);
+  background: rgba(0,0,0,0.25);
   border: 1px solid var(--border);
   border-radius: 7px;
   padding: 10px 12px;
   display: flex;
   flex-direction: column;
   gap: 5px;
+  width: 100%;
+  align-items: center;
+  text-align: center;
 }
 
 .ob-ollama-instructions .subtle {
@@ -371,7 +627,7 @@ button.ob-step-action-btn {
   font-family: "SF Mono", Menlo, monospace;
   font-size: 11.5px;
   color: var(--fg);
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(255,255,255,0.07);
   padding: 5px 9px;
   border-radius: 5px;
 }

@@ -21,15 +21,21 @@ pub mod model;
 pub mod skills;
 pub mod transcribe;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use log::{error, info};
 use tauri::Manager;
+
+/// Set by `restart_app` so the ExitRequested hook below doesn't veto the
+/// shutdown that `app.restart()` triggers internally. Without this gate,
+/// "Restart Soll" silently no-ops because we treat the close as just-another
+/// window-close and prevent the exit.
+pub(crate) static APP_RESTARTING: AtomicBool = AtomicBool::new(false);
 use tauri_plugin_global_shortcut::{
     Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
 };
 
-use crate::settings::KEY_ONBOARDING_DISMISSED;
 use crate::state::AppState;
 use crate::tray::TrayState;
 
@@ -59,15 +65,24 @@ pub fn run() {
             commands::skill_set_enabled,
             commands::models_list,
             commands::model_activate,
+            commands::model_select,
             commands::model_download,
+            commands::model_cancel_download,
+            commands::model_delete,
             commands::ollama_models_list,
             commands::ollama_model_set,
+            commands::ollama_pull_active,
+            commands::ollama_delete_active,
             commands::open_settings_window_cmd,
             commands::open_privacy_settings,
             commands::close_onboarding_window,
+            commands::restart_app,
+            commands::set_onboarding_indicator,
             onboarding::onboarding_status,
             onboarding::onboarding_dismiss,
             onboarding::request_mic_permission,
+            onboarding::request_accessibility_permission,
+            onboarding::open_ollama,
         ])
         .plugin(
             tauri_plugin_log::Builder::new()
@@ -137,15 +152,36 @@ pub fn run() {
                 }
             });
 
-            // Open the onboarding window on first launch only.
-            // Once the user clicks Done/Close it writes KEY_ONBOARDING_DISMISSED=true
-            // and this check skips it on every subsequent startup.
-            let dismissed = state
-                .settings
-                .get_or_default(KEY_ONBOARDING_DISMISSED, "false");
-            if dismissed != "true" {
-                tray::open_onboarding_window(app.handle());
-            }
+            // Onboarding indicator watcher.
+            //
+            // On launch: do one prereq check and open the Setup Guide if
+            // incomplete (so first-time users see it). After that, the loop
+            // only updates the tray indicator — it never reopens the window
+            // on its own. If the user closes the guide, we respect that.
+            // The guide reopens only when the user does something with
+            // Soll — clicking the tray menu entry or hitting the PTT
+            // shortcut (handled in `state::on_press`).
+            let st_watcher = state.clone();
+            let app_watcher = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                use std::time::Duration;
+
+                let initial = st_watcher.onboarding_complete().await;
+                tray::set_setup_needed(&app_watcher, !initial);
+                if !initial {
+                    tray::open_onboarding_window(&app_watcher);
+                }
+                let mut prev = initial;
+
+                loop {
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    let complete = st_watcher.onboarding_complete().await;
+                    if complete != prev {
+                        tray::set_setup_needed(&app_watcher, !complete);
+                        prev = complete;
+                    }
+                }
+            });
 
             Ok(())
         })
@@ -158,7 +194,11 @@ pub fn run() {
             // sets `code = Some(0)`). Any other ExitRequested means a window
             // just got closed; keep the app alive.
             if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
-                if code.is_none() {
+                // Let restart_app's shutdown through unconditionally, even
+                // when Tauri reports `code = None`. Otherwise the user clicks
+                // "Restart Soll" and nothing happens because we treat it as
+                // just-another-window-close.
+                if code.is_none() && !APP_RESTARTING.load(Ordering::SeqCst) {
                     api.prevent_exit();
                 }
             }

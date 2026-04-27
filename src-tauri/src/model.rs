@@ -141,33 +141,65 @@ pub async fn ensure_model(
         let _ = tokio::fs::remove_file(&path).await;
     }
 
+    // If a previous run was interrupted (process killed, app restarted), a
+    // `.part` file may already hold N bytes. Ask the server for `bytes=N-`
+    // and append; full restart only if the server doesn't honour Range.
+    let tmp = path.with_extension("bin.part");
+    let mut resume_from: u64 = match tokio::fs::metadata(&tmp).await {
+        Ok(m) => m.len(),
+        Err(_) => 0,
+    };
+
     info!(
-        "downloading {} from {} -> {}",
+        "downloading {} from {} -> {} (resume_from={resume_from})",
         model.id(),
         model.url(),
         path.display()
     );
     let client = reqwest::Client::builder().build().context("http client")?;
-    let resp = client
-        .get(model.url())
+    let mut req = client.get(model.url());
+    if resume_from > 0 {
+        req = req.header(reqwest::header::RANGE, format!("bytes={resume_from}-"));
+    }
+    let resp = req
         .send()
         .await
         .with_context(|| format!("request {}", model.url()))?;
-    if !resp.status().is_success() {
-        return Err(anyhow!("download {} status {}", model.id(), resp.status()));
-    }
-    let total = resp.content_length().unwrap_or(0);
 
-    let tmp = path.with_extension("bin.part");
-    let mut file = tokio::fs::File::create(&tmp).await.context("create tmp")?;
+    let status = resp.status();
+    let supports_resume = status == reqwest::StatusCode::PARTIAL_CONTENT;
+    if !supports_resume && resume_from > 0 {
+        // Server returned 200 instead of 206 — it's giving us the whole file
+        // again. Discard the partial and treat this as a fresh download.
+        info!("server ignored Range for {}; restarting from scratch", model.id());
+        let _ = tokio::fs::remove_file(&tmp).await;
+        resume_from = 0;
+    }
+    if !status.is_success() {
+        return Err(anyhow!("download {} status {}", model.id(), status));
+    }
+    let total = resume_from + resp.content_length().unwrap_or(0);
+
+    let mut file = if resume_from > 0 {
+        tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(&tmp)
+            .await
+            .context("open tmp for append")?
+    } else {
+        tokio::fs::File::create(&tmp).await.context("create tmp")?
+    };
     let mut stream = resp.bytes_stream();
-    let mut done: u64 = 0;
+    let mut done: u64 = resume_from;
+    on_progress(done, total);
     use tokio::io::AsyncWriteExt;
     while let Some(chunk) = stream.next().await {
         // Check between chunks — keeps cancellation latency ≤ one chunk
         // (typically <64 KB, well under 100 ms on a hot connection).
         if !still_wanted() {
             drop(file);
+            // User-driven cancel deletes the partial so the next click starts
+            // fresh; process kill (no cancel signal) leaves it for resume.
             let _ = tokio::fs::remove_file(&tmp).await;
             info!("cancelled {} at {} / {} bytes", model.id(), done, total);
             return Err(anyhow!(CANCELLED_MSG));

@@ -17,7 +17,7 @@ use crate::model::{ensure_model, WhisperModel, CANCELLED_MSG};
 use crate::paste::paste_text;
 use crate::settings::{
     Settings, DEFAULT_AI_CLEANUP, KEY_AI_CLEANUP, KEY_HAS_DICTATED, KEY_OLLAMA_MODEL,
-    KEY_USER_NAME, KEY_WHISPER_MODEL,
+    KEY_ONBOARDING_DISMISSED, KEY_USER_NAME, KEY_WHISPER_MODEL,
 };
 use crate::skills::{self, Skill};
 use crate::transcribe::Transcriber;
@@ -123,7 +123,7 @@ pub struct AppState {
     pub skills: Mutex<Vec<Skill>>,
     current_model: Mutex<WhisperModel>,
     pub downloading: Mutex<Option<WhisperModel>>,
-    download_epoch: std::sync::atomic::AtomicU64,
+    pub download_epoch: std::sync::atomic::AtomicU64,
     /// Bytes received so far during an active download — read by the onboarding
     /// status command to show live progress. Reset to 0 when the download ends.
     pub download_bytes_done: AtomicU64,
@@ -154,6 +154,13 @@ impl AppState {
         let model = WhisperModel::from_id(&preferred).unwrap_or(WhisperModel::DEFAULT);
 
         let user_skills_dir = data_dir.join("skills");
+        // First-run seed: drop the bundled defaults if no skills directory
+        // exists yet. We only seed when the directory is missing — once it's
+        // there, the user owns its contents (so deleting a default doesn't
+        // resurrect it on next launch).
+        if !user_skills_dir.exists() {
+            seed_default_skills(&user_skills_dir);
+        }
         let skills_list: Vec<Skill> = skills::load_all(Some(&user_skills_dir));
         log::info!(
             "loaded {} skills: {}",
@@ -194,6 +201,46 @@ impl AppState {
         *self.current_model.lock()
     }
 
+    /// Update the preferred model without loading it. Used by the onboarding
+    /// picker so users can choose which model to download before any file
+    /// exists. `switch_model` (the cached-only swap) would refuse to set it.
+    pub fn set_preferred_model(&self, model: WhisperModel) {
+        *self.current_model.lock() = model;
+        let _ = self.settings.set(KEY_WHISPER_MODEL, model.id());
+    }
+
+    /// True only when every onboarding prerequisite is satisfied: the active
+    /// Whisper model is cached, microphone is granted, accessibility is
+    /// granted, Ollama is running with the active model pulled, and the user
+    /// has completed at least one dictation. Used by the backend's prereq
+    /// watcher to drive the Setup Guide window's auto-open behaviour.
+    pub async fn onboarding_complete(&self) -> bool {
+        if !self.is_model_cached(self.current_model()) {
+            return false;
+        }
+        if !matches!(
+            crate::onboarding::check_mic_permission(),
+            crate::onboarding::PermState::Granted
+        ) {
+            return false;
+        }
+        if !crate::onboarding::check_accessibility() {
+            return false;
+        }
+        if !crate::onboarding::check_ollama_running().await {
+            return false;
+        }
+        let active = self.ollama.active_model();
+        let pulled = self.ollama.list_pulled_tags().await;
+        if !pulled.contains(&active) {
+            return false;
+        }
+        if self.settings.get_or_default(KEY_HAS_DICTATED, "false") != "true" {
+            return false;
+        }
+        true
+    }
+
     pub fn user_skills_dir(&self) -> Result<std::path::PathBuf> {
         let d = self
             .app
@@ -227,6 +274,15 @@ impl AppState {
             .unwrap_or(false)
     }
 
+    /// True when a `<model>.bin.part` file is sitting on disk — i.e. a previous
+    /// session started downloading this model and was interrupted (app restart,
+    /// crash). `ensure_model` will resume from where it left off via Range.
+    pub fn has_partial_download(&self, model: WhisperModel) -> bool {
+        let Ok(base) = self.app.path().app_data_dir() else { return false };
+        let part = base.join("models").join(format!("{}.part", model.filename()));
+        std::fs::metadata(&part).map(|m| m.len() > 0).unwrap_or(false)
+    }
+
     fn set_tray(&self, state: TrayState) {
         tray::set_state(&self.app, state);
     }
@@ -241,9 +297,29 @@ impl AppState {
         });
 
         if self.is_model_cached(model) {
-            self.clone().load_and_activate(model).await
-        } else {
+            return self.clone().load_and_activate(model).await;
+        }
+
+        // First-time users haven't dismissed onboarding yet — let the setup
+        // guide drive the download via its toggle, instead of starting one
+        // automatically that the user can't see or stop.
+        //
+        // Exception: if a `.part` file exists from a previous session, the
+        // user already opted in to a download that got interrupted (e.g. by
+        // the Accessibility "Restart Soll" button). Auto-resume it so they
+        // don't have to click the toggle a second time.
+        let onboarded =
+            self.settings.get_or_default(KEY_ONBOARDING_DISMISSED, "false") == "true";
+        let has_partial = self.has_partial_download(model);
+        if onboarded || has_partial {
+            if has_partial && !onboarded {
+                info!("warm_up: resuming interrupted download of {}", model.id());
+            }
             self.clone().boot_download_and_activate(model).await
+        } else {
+            info!("warm_up: model not cached and onboarding active — waiting for user");
+            self.set_tray(TrayState::Idle);
+            Ok(())
         }
     }
 
@@ -301,6 +377,15 @@ impl AppState {
         match result {
             Ok(_) => {
                 info!("start_download({}) complete; model now cached", model.id());
+                // Cached file isn't enough — the transcriber holds the
+                // whisper context in memory. Without this load step, holding
+                // the push-to-talk shortcut hits `on_release` with a None
+                // transcriber and the dictation just silently drops.
+                if let Err(e) = self.clone().load_and_activate(model).await {
+                    warn!("post-download load failed for {}: {e:?}", model.id());
+                    return Err(e);
+                }
+                info!("model {} loaded after download", model.id());
                 Ok(())
             }
             Err(e) if e.to_string().contains(CANCELLED_MSG) => {
@@ -408,6 +493,19 @@ impl AppState {
     }
 
     pub async fn on_press(self: Arc<Self>) -> Result<()> {
+        // The user is actively trying to dictate. If any prereq is missing —
+        // model not loaded, mic denied, accessibility missing, or Ollama
+        // unreachable / its active model not pulled — surface the Setup
+        // Guide instead of letting the recorder path fail silently. This is
+        // the *only* place we auto-reopen the wizard; the watcher loop
+        // deliberately doesn't, so a user who's closed the guide and is
+        // happy to leave Soll idle isn't pestered.
+        if !self.dictation_prereqs_met().await {
+            info!("on_press: prereqs missing — opening Setup Guide");
+            crate::tray::open_onboarding_window(&self.app);
+            return Ok(());
+        }
+
         {
             let mut rec = self.is_recording.lock();
             if *rec {
@@ -421,6 +519,37 @@ impl AppState {
         self.set_tray(TrayState::Transcribing);
         crate::overlay::recording(&self.app);
         Ok(())
+    }
+
+    /// Gate for the PTT path. Sync prereqs first (fast path — model on
+    /// disk, mic granted, accessibility granted), then the async Ollama
+    /// check last so we don't pay a network round-trip when something
+    /// cheaper has already disqualified the press. Skips `has_dictated`
+    /// because that's chicken-and-egg — the only way to satisfy it is to
+    /// dictate, so it can't gate dictation.
+    async fn dictation_prereqs_met(&self) -> bool {
+        if !self.is_model_cached(self.current_model()) {
+            return false;
+        }
+        if !matches!(
+            crate::onboarding::check_mic_permission(),
+            crate::onboarding::PermState::Granted
+        ) {
+            return false;
+        }
+        if !crate::onboarding::check_accessibility() {
+            return false;
+        }
+        // One HTTP call covers both "Ollama running?" and "is the active
+        // model pulled?": list_pulled_tags returns empty on connect/timeout
+        // failure, so the contains() check naturally short-circuits when
+        // Ollama is down.
+        let pulled = self.ollama.list_pulled_tags().await;
+        let active = self.ollama.active_model();
+        if !pulled.contains(&active) {
+            return false;
+        }
+        true
     }
 
     pub async fn on_release(self: Arc<Self>) -> Result<()> {
@@ -643,6 +772,41 @@ impl AppState {
         crate::overlay::transcribed(&self.app);
         Ok(())
     }
+}
+
+/// Bundled defaults shipped with Soll so a fresh install has 5 AI skills and
+/// 5 phrases out of the box. Embedded via `include_str!` so they live in the
+/// binary itself — no resource files to copy at install time. Written into
+/// the user's skills dir on first launch only; once the dir exists we leave
+/// it alone (so deleting a default in the UI is permanent).
+fn seed_default_skills(dir: &std::path::Path) {
+    use log::warn;
+
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        warn!("seed_default_skills: create_dir_all({}): {e:?}", dir.display());
+        return;
+    }
+    const DEFAULTS: &[(&str, &str)] = &[
+        // AI skills
+        ("email.md",         include_str!("default_skills/email.md")),
+        ("slack.md",         include_str!("default_skills/slack.md")),
+        ("bullets.md",       include_str!("default_skills/bullets.md")),
+        ("summary.md",       include_str!("default_skills/summary.md")),
+        ("formal.md",        include_str!("default_skills/formal.md")),
+        // Phrases
+        ("signature.md",     include_str!("default_skills/signature.md")),
+        ("out-of-office.md", include_str!("default_skills/out-of-office.md")),
+        ("intro.md",         include_str!("default_skills/intro.md")),
+        ("meeting-link.md",  include_str!("default_skills/meeting-link.md")),
+        ("thanks.md",        include_str!("default_skills/thanks.md")),
+    ];
+    for (filename, body) in DEFAULTS {
+        let path = dir.join(filename);
+        if let Err(e) = std::fs::write(&path, body) {
+            warn!("seed_default_skills: write({}): {e:?}", path.display());
+        }
+    }
+    log::info!("seeded {} default skills to {}", DEFAULTS.len(), dir.display());
 }
 
 #[cfg(test)]

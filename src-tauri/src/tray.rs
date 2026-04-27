@@ -1,19 +1,17 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use once_cell::sync::{Lazy, OnceCell};
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::{
     image::Image,
-    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu, SubmenuBuilder},
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
     AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, Wry,
 };
 
 use crate::model::WhisperModel;
-use crate::state::AppState;
 
 const TRAY_ID: &str = "soll-tray";
 const DONE_REVERT_MS: u64 = 900;
@@ -28,6 +26,23 @@ static IMG_BADGE: Lazy<Image<'static>> =
     Lazy::new(|| Image::from_bytes(include_bytes!("../icons/tray_badge.png")).unwrap());
 
 static EPOCH: AtomicU64 = AtomicU64::new(0);
+
+/// True while at least one onboarding step is unfinished. When true the tray
+/// icon shows the red badge regardless of what TrayState the runtime sets.
+static SETUP_NEEDED: AtomicBool = AtomicBool::new(false);
+
+/// Most recent TrayState pushed via `set_state`. Tracked so `apply_icon` can
+/// re-decide the icon when SETUP_NEEDED toggles independently of the state.
+static CURRENT_STATE: Lazy<Mutex<TrayState>> = Lazy::new(|| Mutex::new(TrayState::Loading));
+
+/// Live handle to the "Setup Guide…" menu item. Tracked so we can locate
+/// it for removal when prereqs become complete (we want the entry hidden
+/// rather than just relabelled while the user is fully set up).
+static ONBOARDING_ITEM: Lazy<Mutex<Option<MenuItem<Wry>>>> = Lazy::new(|| Mutex::new(None));
+
+/// The active tray menu, kept around so `set_setup_needed` can swap it for
+/// a freshly-built one when the Setup Guide entry needs to appear/disappear.
+static TRAY_MENU: Lazy<Mutex<Option<Menu<Wry>>>> = Lazy::new(|| Mutex::new(None));
 
 /// Status line in the tray menu, rewritten on every state change.
 static STATUS_ITEM: OnceCell<MenuItem<Wry>> = OnceCell::new();
@@ -80,6 +95,7 @@ impl TrayState {
 
 pub fn build_tray(app: &AppHandle) -> Result<()> {
     let menu = build_menu(app)?;
+    *TRAY_MENU.lock() = Some(menu.clone());
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(IMG_BADGE.clone())
         .icon_as_template(false)
@@ -102,6 +118,7 @@ pub fn build_tray(app: &AppHandle) -> Result<()> {
 }
 
 pub fn set_state(app: &AppHandle, state: TrayState) {
+    *CURRENT_STATE.lock() = state;
     let my_epoch = EPOCH.fetch_add(1, Ordering::SeqCst) + 1;
 
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
@@ -109,20 +126,52 @@ pub fn set_state(app: &AppHandle, state: TrayState) {
     }
     set_status_text(state.status_text());
 
-    match state {
-        // Loading / Initializing — white logo + red badge until ready.
-        TrayState::Loading | TrayState::Initializing => {
-            set_icon(app, IMG_BADGE.clone());
+    apply_icon(app);
+    if matches!(state, TrayState::Transcribed) {
+        schedule_revert(app.clone(), my_epoch, DONE_REVERT_MS);
+    }
+}
+
+/// Pick the right tray icon based on (a) the latest TrayState and (b) whether
+/// onboarding is incomplete. The badged icon wins when either signal asks
+/// for attention; otherwise plain white.
+fn apply_icon(app: &AppHandle) {
+    let state = *CURRENT_STATE.lock();
+    let busy = matches!(state, TrayState::Loading | TrayState::Initializing);
+    let needs_setup = SETUP_NEEDED.load(Ordering::SeqCst);
+    let img = if busy || needs_setup {
+        IMG_BADGE.clone()
+    } else {
+        IMG_WHITE.clone()
+    };
+    set_icon(app, img);
+}
+
+/// Flip the "user has unfinished onboarding" indicator. When `needed` is true
+/// the tray icon shows a red badge and the menu shows a "🔴 Setup Guide…"
+/// entry. When false the entry is removed entirely so the menu reads as
+/// clean Settings → Quit. Called by the backend's prereq watcher whenever
+/// the polled prerequisite state crosses the boundary.
+pub fn set_setup_needed(app: &AppHandle, needed: bool) {
+    let prev = SETUP_NEEDED.swap(needed, Ordering::SeqCst);
+    if prev != needed {
+        apply_icon(app);
+        rebuild_menu(app);
+    }
+}
+
+/// Rebuild the tray menu in place. Cheap operation but needs to happen on
+/// the main thread (Tauri dispatches internally), so callable from any
+/// async context safely.
+fn rebuild_menu(app: &AppHandle) {
+    match build_menu(app) {
+        Ok(menu) => {
+            *TRAY_MENU.lock() = Some(menu.clone());
+            if let Some(tray) = app.tray_by_id(TRAY_ID) {
+                let _ = tray.set_menu(Some(menu));
+            }
         }
-        // Transcribed — show "Transcribed ✓" briefly, then revert to idle.
-        TrayState::Transcribed => {
-            set_icon(app, IMG_WHITE.clone());
-            schedule_revert(app.clone(), my_epoch, DONE_REVERT_MS);
-        }
-        // Everything else — plain white logo, no animation. The pill handles status.
-        _ => {
-            set_icon(app, IMG_WHITE.clone());
-        }
+        Err(e) => log::error!("rebuild_menu: {e:?}"),
     }
 }
 
@@ -169,19 +218,6 @@ pub fn set_download_progress(model: WhisperModel, done: u64, total: u64) {
     }
 }
 
-/// Rebuild the entire tray menu — used after a download finishes so the
-/// completed model moves from the Download section into the main list.
-pub fn refresh_menu(app: &AppHandle) {
-    match build_menu(app) {
-        Ok(menu) => {
-            if let Some(tray) = app.tray_by_id(TRAY_ID) {
-                let _ = tray.set_menu(Some(menu));
-            }
-        }
-        Err(e) => log::error!("refresh_menu: {e:?}"),
-    }
-}
-
 /// Toggle which cached model carries the checkmark. Call after every swap.
 pub fn update_model_check(current: WhisperModel) {
     let items = CACHED_ITEMS.lock();
@@ -190,22 +226,15 @@ pub fn update_model_check(current: WhisperModel) {
     }
 }
 
-pub fn open_dictionary_window(app: &AppHandle) {
-    open_window(app, "dictionary", "Soll — Dictionary", 520.0, 680.0);
-}
-
-pub fn open_legend_window(app: &AppHandle) {
-    open_window(app, "legend", "Soll — Status Legend", 460.0, 560.0);
-}
-
 pub fn open_settings_window(app: &AppHandle) {
     open_window(app, "settings", "Soll — Settings", 860.0, 640.0);
 }
 
 pub fn open_onboarding_window(app: &AppHandle) {
-    // Dedicated builder so we can centre the window on screen.
+    activate_app();
     if let Some(existing) = app.get_webview_window("onboarding") {
         let _ = existing.show();
+        center_on_active_screen(&existing, 560.0, 680.0);
         let _ = existing.set_focus();
         return;
     }
@@ -215,20 +244,53 @@ pub fn open_onboarding_window(app: &AppHandle) {
         .inner_size(560.0, 680.0)
         .min_inner_size(420.0, 500.0)
         .resizable(true)
-        .center()
         .build()
     {
-        Ok(_) => log::info!("opened onboarding window"),
+        Ok(window) => {
+            // Show first so the window is realised, *then* set position —
+            // some macOS versions ignore set_position before the window has
+            // been shown. We center on the monitor under the cursor (the
+            // user's active screen) rather than the primary monitor.
+            let _ = window.show();
+            center_on_active_screen(&window, 560.0, 680.0);
+            let _ = window.set_focus();
+            log::info!("opened onboarding window");
+        }
         Err(e) => log::error!("open onboarding window: {e:?}"),
     }
 }
 
-/// Public for commands that need to refresh the tray after model state
-/// changes. Settings-window initiated downloads use this to flip UI
-/// indicators without going through the tray submenu.
-pub fn refresh_settings_ui(_app: &AppHandle) {
-    // Placeholder for future tauri event emission ("models_changed").
-    // Settings window currently polls via settings_get / models_list.
+/// Centre the window on the monitor under the cursor (falling back to the
+/// primary monitor). Logical-size aware: we know the window's logical size
+/// from the builder — `outer_size()` is unreliable before the window is
+/// fully realised — and convert to physical coords using the monitor's
+/// scale factor so HiDPI screens don't end up off-centre.
+fn center_on_active_screen(
+    window: &tauri::WebviewWindow,
+    logical_w: f64,
+    logical_h: f64,
+) {
+    let app = window.app_handle();
+
+    // Pick the monitor under the cursor. Falls back to primary if the
+    // cursor is somehow off all monitors (rare, but happens during fast
+    // monitor reconfiguration).
+    let monitor = app
+        .cursor_position()
+        .ok()
+        .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else { return };
+
+    let mpos = monitor.position();
+    let msize = monitor.size();
+    let scale = monitor.scale_factor();
+    let win_phys_w = (logical_w * scale) as i32;
+    let win_phys_h = (logical_h * scale) as i32;
+
+    let x = mpos.x + ((msize.width as i32 - win_phys_w) / 2).max(0);
+    let y = mpos.y + ((msize.height as i32 - win_phys_h) / 2).max(0);
+    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
 }
 
 // ── menu construction ──────────────────────────────────────────────────────
@@ -251,173 +313,41 @@ fn build_menu(app: &AppHandle) -> Result<Menu<Wry>> {
         None::<&str>,
     )?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-    let onboarding = MenuItem::with_id(app, "onboarding", "Setup Guide…", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Soll", true, Some("Cmd+Q"))?;
 
-    Menu::with_items(
-        app,
-        &[
-            &status_item,
-            &hotkey_item,
-            &sep,
-            &settings,
-            &onboarding,
-            &sep2,
-            &quit,
-        ],
-    )
-    .map_err(Into::into)
-}
-
-fn build_model_submenu(app: &AppHandle) -> Result<Submenu<Wry>> {
-    let state = app
-        .try_state::<Arc<AppState>>()
-        .ok_or_else(|| anyhow!("AppState not managed yet"))?;
-    let state = state.inner();
-    let current = state.current_model();
-    let downloading = *state.downloading.lock();
-
-    let mut cached_map: HashMap<WhisperModel, CheckMenuItem<Wry>> = HashMap::new();
-    let mut download_map: HashMap<WhisperModel, MenuItem<Wry>> = HashMap::new();
-    let mut builder = SubmenuBuilder::new(app, "Whisper model");
-
-    // Section 1: cached/available models. Only these are selectable as the
-    // active model. Radio checkmark on the currently-loaded one.
-    let mut has_cached = false;
-    for &m in WhisperModel::ALL {
-        if state.is_model_cached(m) {
-            has_cached = true;
-            let label = format!("{} ({})", m.short_name(), m.size_label());
-            let item = CheckMenuItem::with_id(
-                app,
-                format!("model.{}", m.id()),
-                &label,
-                true,
-                m == current,
-                None::<&str>,
-            )?;
-            builder = builder.item(&item);
-            cached_map.insert(m, item);
-        }
-    }
-
-    // Section 2: models available for download. Clickable entries that
-    // trigger a confirmation dialog before starting the fetch.
-    let uncached: Vec<WhisperModel> = WhisperModel::ALL
-        .iter()
-        .copied()
-        .filter(|m| !state.is_model_cached(*m))
-        .collect();
-    if !uncached.is_empty() {
-        if has_cached {
-            let sep = PredefinedMenuItem::separator(app)?;
-            builder = builder.item(&sep);
-        }
-        for m in uncached {
-            let label = if downloading == Some(m) {
-                format!("{} — Downloading… ({})", m.short_name(), m.size_label())
-            } else {
-                format!("{} — Download ({})", m.short_name(), m.size_label())
-            };
-            let item = MenuItem::with_id(
-                app,
-                format!("download.{}", m.id()),
-                &label,
-                true,
-                None::<&str>,
-            )?;
-            builder = builder.item(&item);
-            download_map.insert(m, item);
-        }
-    }
-
-    let submenu = builder.build()?;
-    *CACHED_ITEMS.lock() = cached_map;
-    *DOWNLOAD_ITEMS.lock() = download_map;
-    Ok(submenu)
-}
-
-// ── click handlers ─────────────────────────────────────────────────────────
-
-fn parse_model_id(raw: &str, prefix: &str) -> Option<WhisperModel> {
-    raw.strip_prefix(prefix).and_then(WhisperModel::from_id)
-}
-
-fn handle_active_model_click(app: &AppHandle, model: WhisperModel) {
-    let state = match app.try_state::<Arc<AppState>>() {
-        Some(s) => s.inner().clone(),
-        None => return,
+    // The Setup Guide entry only exists while onboarding is incomplete. Once
+    // every prereq is satisfied it disappears from the menu entirely — no
+    // greyed-out row, no clutter.
+    let onboarding = if SETUP_NEEDED.load(Ordering::SeqCst) {
+        let item = MenuItem::with_id(
+            app,
+            "onboarding",
+            "🔴  Setup Guide…",
+            true,
+            None::<&str>,
+        )?;
+        *ONBOARDING_ITEM.lock() = Some(item.clone());
+        Some(item)
+    } else {
+        *ONBOARDING_ITEM.lock() = None;
+        None
     };
-    // Radio invariant — ensure exactly one cached item stays checked.
-    update_model_check(model);
 
-    if state.current_model() == model {
-        return;
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = vec![
+        &status_item,
+        &hotkey_item,
+        &sep,
+        &settings,
+    ];
+    if let Some(ref ob) = onboarding {
+        items.push(ob);
     }
-    log::info!("tray: activate cached {}", model.id());
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) = state.clone().switch_model(model).await {
-            log::error!("switch_model({}) failed: {e:?}", model.id());
-            update_model_check(state.current_model());
-        }
-    });
-}
+    items.push(&sep2);
+    items.push(&quit);
 
-fn handle_download_click(app: &AppHandle, model: WhisperModel) {
-    let state = match app.try_state::<Arc<AppState>>() {
-        Some(s) => s.inner().clone(),
-        None => return,
-    };
-    // Already downloading this model — nothing to do.
-    if *state.downloading.lock() == Some(model) {
-        log::info!("tray: download.{} — already running", model.id());
-        return;
-    }
-    // Raced with completion: refresh menu so it moves to the cached
-    // section and the user can click to activate.
-    if state.is_model_cached(model) {
-        refresh_menu(app);
-        return;
-    }
-    let app_clone = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let confirmed = confirm_download_dialog(model).await;
-        if !confirmed {
-            log::info!("tray: download.{} cancelled by user", model.id());
-            return;
-        }
-        if let Err(e) = state.start_download(model).await {
-            log::error!("start_download({}): {e:?}", model.id());
-        }
-        // Refresh menu when download completes (success or failure) so
-        // the UI accurately reflects on-disk state.
-        refresh_menu(&app_clone);
-    });
-}
-
-async fn confirm_download_dialog(model: WhisperModel) -> bool {
-    let message = format!(
-        "Download the {} Whisper model?\\n\\nSize: {}. The download runs in the background — Soll keeps working on your current model while it fetches.",
-        model.display_name(),
-        model.size_label()
-    );
-    let script = format!(
-        "display dialog \"{}\" buttons {{\"Cancel\", \"Download\"}} default button \"Download\" with title \"Soll\"",
-        message.replace('\\', "\\\\").replace('"', "\\\"")
-    );
-    let output = tokio::process::Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .output()
-        .await;
-    match output {
-        Ok(o) if o.status.success() => {
-            String::from_utf8_lossy(&o.stdout).contains("Download")
-        }
-        _ => false,
-    }
+    Menu::with_items(app, &items).map_err(Into::into)
 }
 
 // ── internal tray helpers ──────────────────────────────────────────────────
@@ -426,27 +356,6 @@ fn set_icon(app: &AppHandle, image: Image<'static>) {
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_icon(Some(image));
     }
-}
-
-fn start_blink(
-    app: AppHandle,
-    epoch: u64,
-    a: Image<'static>,
-    b: Image<'static>,
-    period_ms: u64,
-) {
-    tauri::async_runtime::spawn(async move {
-        let mut toggle = false;
-        loop {
-            tokio::time::sleep(Duration::from_millis(period_ms)).await;
-            if EPOCH.load(Ordering::SeqCst) != epoch {
-                return;
-            }
-            let img = if toggle { b.clone() } else { a.clone() };
-            set_icon(&app, img);
-            toggle = !toggle;
-        }
-    });
 }
 
 fn schedule_revert(app: AppHandle, epoch: u64, after_ms: u64) {
@@ -465,6 +374,7 @@ fn schedule_revert(app: AppHandle, epoch: u64, after_ms: u64) {
 }
 
 fn open_window(app: &AppHandle, label: &str, title: &str, w: f64, h: f64) {
+    activate_app();
     if let Some(existing) = app.get_webview_window(label) {
         let _ = existing.show();
         let _ = existing.set_focus();
@@ -478,7 +388,30 @@ fn open_window(app: &AppHandle, label: &str, title: &str, w: f64, h: f64) {
         .resizable(true)
         .build()
     {
-        Ok(_) => log::info!("opened {label} window"),
+        Ok(window) => {
+            let _ = window.show();
+            let _ = window.set_focus();
+            log::info!("opened {label} window");
+        }
         Err(e) => log::error!("open {label} window: {e:?}"),
+    }
+}
+
+/// Bring Soll to the front. Accessory-mode apps (no Dock icon) don't get
+/// activated by `set_focus()` alone — newly-shown windows end up *behind*
+/// whatever app currently owns the menu bar. Calling
+/// `NSApp.activateIgnoringOtherApps:YES` first promotes Soll to the
+/// foreground for the duration of this window-open.
+//
+// `cocoa` is deprecated in favour of `objc2-app-kit` but we lean on it in
+// just one spot here. Allow inline rather than migrate the whole module.
+#[allow(deprecated)]
+fn activate_app() {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        use cocoa::appkit::NSApp;
+        use objc::{msg_send, sel, sel_impl};
+        let nsapp = NSApp();
+        let _: () = msg_send![nsapp, activateIgnoringOtherApps: true];
     }
 }

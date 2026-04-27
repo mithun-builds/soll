@@ -22,21 +22,39 @@ pub fn ensure_metal_resources() {
     if std::env::var_os("GGML_METAL_PATH_RESOURCES").is_some() {
         return;
     }
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    let resources = std::path::Path::new(manifest).join("resources");
-    let shader = resources.join("ggml-metal.metal");
-    if shader.exists() {
-        std::env::set_var("GGML_METAL_PATH_RESOURCES", &resources);
-        log::info!(
-            "metal: GGML_METAL_PATH_RESOURCES={}",
-            resources.display()
-        );
-    } else {
-        log::warn!(
-            "metal: ggml-metal.metal not at {}; whisper will fall back to CPU",
-            shader.display()
-        );
+
+    // 1) Installed .app bundle: shader lives at Soll.app/Contents/Resources/.
+    //    Reading from there is uncontroversial — no TCC prompt.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(contents_dir) = exe.parent().and_then(|p| p.parent()) {
+            let resources = contents_dir.join("Resources");
+            let shader = resources.join("ggml-metal.metal");
+            if shader.exists() {
+                std::env::set_var("GGML_METAL_PATH_RESOURCES", &resources);
+                log::info!("metal: bundle resources = {}", resources.display());
+                return;
+            }
+        }
     }
+
+    // 2) Dev fallback (cargo / tauri dev only). Don't probe this in release —
+    //    `CARGO_MANIFEST_DIR` is the build path, which is often inside
+    //    ~/Documents and triggers a Files & Folders TCC prompt the moment we
+    //    stat it. Gating on `debug_assertions` keeps this path off in
+    //    production binaries.
+    #[cfg(debug_assertions)]
+    {
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let resources = std::path::Path::new(manifest).join("resources");
+        let shader = resources.join("ggml-metal.metal");
+        if shader.exists() {
+            std::env::set_var("GGML_METAL_PATH_RESOURCES", &resources);
+            log::info!("metal: dev resources = {}", resources.display());
+            return;
+        }
+    }
+
+    log::warn!("metal: ggml-metal.metal not found; whisper falls back to CPU");
 }
 
 #[cfg(not(target_os = "macos"))]

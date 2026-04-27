@@ -4215,6 +4215,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arboard",
+ "block",
  "cocoa",
  "cpal",
  "dirs 5.0.1",

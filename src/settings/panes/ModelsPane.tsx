@@ -60,13 +60,14 @@ export function ModelsPane() {
     }
   };
 
-  const downloadWhisper = async (id: string, label: string, size: string) => {
-    const ok = window.confirm(
-      `Download ${label} (${size})?\n\nRuns in the background. You can keep dictating with your current model while it fetches.`,
-    );
-    if (!ok) return;
+  const downloadWhisper = async (id: string) => {
+    // Fire-and-forget. `model_download` resolves only when the whole
+    // download (and the post-download model load) finishes, which takes
+    // minutes — awaiting it here used to leave the button looking dead.
+    // The 1.5 s polling picks up `is_downloading=true` and flips the
+    // label to "Downloading…" within a tick.
     try {
-      await invoke("model_download", { id });
+      void invoke("model_download", { id });
       refresh();
     } catch (e) {
       setErr(String(e));
@@ -149,7 +150,7 @@ export function ModelsPane() {
                   type="button"
                   className="secondary"
                   disabled={m.is_downloading}
-                  onClick={() => downloadWhisper(m.id, m.label, m.size)}
+                  onClick={() => downloadWhisper(m.id)}
                 >
                   {m.is_downloading ? "Downloading…" : "Download"}
                 </button>
