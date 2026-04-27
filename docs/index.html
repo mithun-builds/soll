@@ -183,7 +183,7 @@
       display: inline-flex; align-items: center; gap: 8px;
       background: rgba(0,0,0,0.7); border: 1px solid rgba(255,255,255,0.1);
       border-radius: 999px; padding: 6px 14px;
-      margin-top: auto;
+      margin-top: 20px;
     }
     .step-pill-label {
       font-size: 12px; font-weight: 500;
@@ -359,11 +359,20 @@
       margin: 0 auto 24px; position: relative; z-index: 1;
     }
     .step-title { font-size: 18px; font-weight: 700; margin-bottom: 10px; letter-spacing: -0.01em; }
-    .step-desc { font-size: 14px; color: var(--fg-sub); line-height: 1.65; }
+    .step-desc {
+      font-size: 14px; color: var(--fg-sub); line-height: 1.65;
+      /* Reserve enough vertical space for the longest description (step 3
+         wraps to ~3 lines on desktop). With this, every step's desc occupies
+         the same height, which puts the indicator (kbd / pill) at the same
+         y-coordinate across the row. Mobile has its own gap and stacks
+         vertically, so no min-height needed there. */
+    }
+    @media (min-width: 769px) {
+      .step-desc { min-height: 5em; }
+    }
     .step-kbd {
       display: inline-flex; align-items: center; gap: 2px;
-      margin-top: auto;
-      padding-top: 20px;
+      margin-top: 20px;
     }
     .kbd {
       font-family: inherit; font-size: 12px; font-weight: 600;
@@ -453,6 +462,9 @@
       .container { padding: 0 20px; }
       section { padding: 72px 0; }
       .privacy-inner { grid-template-columns: 1fr; gap: 48px; }
+      /* On mobile the steps stack vertically; the desktop "same baseline"
+         alignment doesn't apply, so add explicit spacing between them. */
+      .steps { gap: 56px; }
       .steps::before { display: none; }
       .feature-card { border-right: none; border-bottom: 1px solid var(--border); }
       .feature-card:last-child { border-bottom: none; }
