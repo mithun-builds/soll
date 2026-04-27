@@ -182,7 +182,8 @@
     .step-pill {
       display: inline-flex; align-items: center; gap: 8px;
       background: rgba(0,0,0,0.7); border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 999px; padding: 6px 14px; margin-top: 20px;
+      border-radius: 999px; padding: 6px 14px;
+      margin-top: auto;
     }
     .step-pill-label {
       font-size: 12px; font-weight: 500;
@@ -337,7 +338,19 @@
       position: absolute; top: 34px; left: calc(16.67% + 40px); right: calc(16.67% + 40px);
       height: 1px; background: linear-gradient(90deg, var(--border), var(--border-s), var(--border));
     }
-    .step { padding: 0 32px; text-align: center; }
+    .step {
+      padding: 0 32px;
+      text-align: center;
+      /* Flex column with `margin-top: auto` on the indicator pins kbd/pill
+         to the bottom of each step. Combined with grid `align-items: stretch`
+         on .steps, every column is the same height — so the kbd in step 1,
+         the listening pill in step 2, and the done pill in step 3 all sit
+         on the same horizontal line regardless of how many lines the desc
+         text wraps to. */
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
     .step-num {
       width: 68px; height: 68px; border-radius: 50%;
       background: var(--bg-card); border: 1px solid var(--border-s);
@@ -349,7 +362,8 @@
     .step-desc { font-size: 14px; color: var(--fg-sub); line-height: 1.65; }
     .step-kbd {
       display: inline-flex; align-items: center; gap: 2px;
-      margin-top: 10px;
+      margin-top: auto;
+      padding-top: 20px;
     }
     .kbd {
       font-family: inherit; font-size: 12px; font-weight: 600;
@@ -658,18 +672,6 @@
         <div class="step-desc">Hold ⌃⇧Space anywhere on your Mac.</div>
         <div class="step-kbd">
           <span class="kbd">⌃</span><span class="kbd">⇧</span><span class="kbd">Space</span>
-        </div>
-        <div class="step-pill">
-          <div class="lm lm--listen">
-            <div class="lm-bar lm-bar-animate" style="height:4px;animation-delay:0.30s"></div>
-            <div class="lm-bar lm-bar-animate" style="height:8px;animation-delay:0.15s"></div>
-            <div class="lm-bar lm-bar-animate" style="height:15px;animation-delay:0s"></div>
-            <div class="lm-cursor lm-cursor-blink"></div>
-            <div class="lm-bar lm-bar-animate" style="height:13px;animation-delay:0.10s"></div>
-            <div class="lm-bar lm-bar-animate" style="height:8px;animation-delay:0.22s"></div>
-            <div class="lm-bar lm-bar-animate" style="height:4px;animation-delay:0.36s"></div>
-          </div>
-          <span class="step-pill-label">listening...</span>
         </div>
       </div>
       <div class="step reveal" style="transition-delay:100ms">
