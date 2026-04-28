@@ -78,6 +78,8 @@ pub fn run() {
             commands::close_onboarding_window,
             commands::restart_app,
             commands::set_onboarding_indicator,
+            commands::app_version,
+            commands::check_for_update,
             onboarding::onboarding_status,
             onboarding::onboarding_dismiss,
             onboarding::request_mic_permission,

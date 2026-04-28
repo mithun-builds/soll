@@ -12,7 +12,6 @@ use crate::audio::AudioRecorder;
 use crate::cleanup::OllamaClient;
 use crate::corrections;
 use crate::dictionary::Dictionary;
-use crate::formatter::{self, Format};
 use crate::model::{ensure_model, WhisperModel, CANCELLED_MSG};
 use crate::paste::paste_text;
 use crate::settings::{
@@ -704,44 +703,33 @@ impl AppState {
 
         // ── Default cleanup path (no skill matched) ──────────────────────────
         //
-        // Handles plain prose (Ollama polish + corrections) and list formats
-        // (bullets / numbered, detected deterministically).
+        // Plain prose only. Auto-detection of "bullet list…" / "numbered list…"
+        // utterances has been removed: with a `bullets` AI skill installed by
+        // default, two competing paths created confusion about what would
+        // happen. Lists now flow through the explicit skill trigger only.
 
-        let format = formatter::detect(&raw);
-
-        let body_for_cleanup = if matches!(format, Format::Plain) {
-            corrections::apply(&raw)
-        } else {
-            raw.clone()
-        };
+        let body_for_cleanup = corrections::apply(&raw);
 
         let t_ollama_start = Instant::now();
-        let (polished, ollama_ms, ollama_used) = match format {
-            Format::Plain if ai_on => {
-                match self
-                    .ollama
-                    .polish_with_terms(&body_for_cleanup, &preserve_terms)
-                    .await
-                {
-                    Ok(p) => {
-                        let ms = t_ollama_start.elapsed().as_millis() as u64;
-                        (p, ms, true)
-                    }
-                    Err(e) => {
-                        let ms = t_ollama_start.elapsed().as_millis() as u64;
-                        warn!("[latency #{n}] cleanup skipped ({e:?}), using corrected transcript");
-                        (body_for_cleanup.clone(), ms, false)
-                    }
+        let (polished, ollama_ms, ollama_used) = if ai_on {
+            match self
+                .ollama
+                .polish_with_terms(&body_for_cleanup, &preserve_terms)
+                .await
+            {
+                Ok(p) => {
+                    let ms = t_ollama_start.elapsed().as_millis() as u64;
+                    (p, ms, true)
+                }
+                Err(e) => {
+                    let ms = t_ollama_start.elapsed().as_millis() as u64;
+                    warn!("[latency #{n}] cleanup skipped ({e:?}), using corrected transcript");
+                    (body_for_cleanup.clone(), ms, false)
                 }
             }
-            Format::Plain => {
-                info!("[latency #{n}] AI cleanup disabled — using corrected transcript");
-                (body_for_cleanup.clone(), 0, false)
-            }
-            Format::Bullets | Format::Numbered => {
-                info!("[latency #{n}] format={:?} (skipping ollama)", format);
-                (formatter::apply(&raw, format), 0, false)
-            }
+        } else {
+            info!("[latency #{n}] AI cleanup disabled — using corrected transcript");
+            (body_for_cleanup.clone(), 0, false)
         };
 
         let with_dict = crate::dictionary::apply_to_text(&polished, &preserve_terms);

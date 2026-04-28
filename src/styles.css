@@ -692,6 +692,23 @@ button.danger-btn:hover {
   font-size: 13px;
 }
 
+.version-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+}
+.version-row code { font-size: 12px; }
+.version-row button { margin-left: auto; }
+.version-status {
+  font-size: 12px;
+}
+.version-status--available {
+  color: var(--accent);
+  text-decoration: none;
+}
+.version-status--available:hover { text-decoration: underline; }
+
 /* ── dictionary add row ───────────────────────────────────────────── */
 
 .dict-add {

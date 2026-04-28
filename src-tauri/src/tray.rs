@@ -232,9 +232,11 @@ pub fn open_settings_window(app: &AppHandle) {
 
 pub fn open_onboarding_window(app: &AppHandle) {
     activate_app();
+    let (cx, cy) = compute_center_position(app, 560.0, 680.0);
+
     if let Some(existing) = app.get_webview_window("onboarding") {
+        let _ = existing.set_position(tauri::LogicalPosition::new(cx, cy));
         let _ = existing.show();
-        center_on_active_screen(&existing, 560.0, 680.0);
         let _ = existing.set_focus();
         return;
     }
@@ -243,16 +245,17 @@ pub fn open_onboarding_window(app: &AppHandle) {
         .title("Soll — Setup Guide")
         .inner_size(560.0, 680.0)
         .min_inner_size(420.0, 500.0)
+        .position(cx, cy)
+        .visible(false)
         .resizable(true)
         .build()
     {
         Ok(window) => {
-            // Show first so the window is realised, *then* set position —
-            // some macOS versions ignore set_position before the window has
-            // been shown. We center on the monitor under the cursor (the
-            // user's active screen) rather than the primary monitor.
+            // Position is set at build time via .position() above, so when
+            // we show() the window it's already in the right place — no
+            // flicker, no set_position-after-show race that previously
+            // landed the window in the bottom-right of the secondary monitor.
             let _ = window.show();
-            center_on_active_screen(&window, 560.0, 680.0);
             let _ = window.set_focus();
             log::info!("opened onboarding window");
         }
@@ -260,37 +263,34 @@ pub fn open_onboarding_window(app: &AppHandle) {
     }
 }
 
-/// Centre the window on the monitor under the cursor (falling back to the
-/// primary monitor). Logical-size aware: we know the window's logical size
-/// from the builder — `outer_size()` is unreliable before the window is
-/// fully realised — and convert to physical coords using the monitor's
-/// scale factor so HiDPI screens don't end up off-centre.
-fn center_on_active_screen(
-    window: &tauri::WebviewWindow,
-    logical_w: f64,
-    logical_h: f64,
-) {
-    let app = window.app_handle();
-
-    // Pick the monitor under the cursor. Falls back to primary if the
-    // cursor is somehow off all monitors (rare, but happens during fast
-    // monitor reconfiguration).
+/// Logical (x, y) for the top-left of a window of `logical_w × logical_h`
+/// centred on the monitor under the cursor (fallback: primary monitor).
+///
+/// Computed in logical coords end-to-end so the result feeds directly into
+/// `WebviewWindowBuilder::position()` and `Window::set_position(Logical…)`.
+/// Doing the math up front avoids the post-show `set_position` race that
+/// otherwise lets macOS paint the window at its default location first.
+fn compute_center_position(app: &AppHandle, logical_w: f64, logical_h: f64) -> (f64, f64) {
     let monitor = app
         .cursor_position()
         .ok()
         .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten())
         .or_else(|| app.primary_monitor().ok().flatten());
-    let Some(monitor) = monitor else { return };
+    let Some(monitor) = monitor else { return (100.0, 100.0) };
 
     let mpos = monitor.position();
     let msize = monitor.size();
     let scale = monitor.scale_factor();
-    let win_phys_w = (logical_w * scale) as i32;
-    let win_phys_h = (logical_h * scale) as i32;
+    // Convert the monitor's physical position+size into logical units so we
+    // can subtract logical window dims directly.
+    let mlx = mpos.x as f64 / scale;
+    let mly = mpos.y as f64 / scale;
+    let mlw = msize.width as f64 / scale;
+    let mlh = msize.height as f64 / scale;
 
-    let x = mpos.x + ((msize.width as i32 - win_phys_w) / 2).max(0);
-    let y = mpos.y + ((msize.height as i32 - win_phys_h) / 2).max(0);
-    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+    let x = mlx + ((mlw - logical_w) / 2.0).max(0.0);
+    let y = mly + ((mlh - logical_h) / 2.0).max(0.0);
+    (x, y)
 }
 
 // ── menu construction ──────────────────────────────────────────────────────
@@ -375,7 +375,10 @@ fn schedule_revert(app: AppHandle, epoch: u64, after_ms: u64) {
 
 fn open_window(app: &AppHandle, label: &str, title: &str, w: f64, h: f64) {
     activate_app();
+    let (cx, cy) = compute_center_position(app, w, h);
+
     if let Some(existing) = app.get_webview_window(label) {
+        let _ = existing.set_position(tauri::LogicalPosition::new(cx, cy));
         let _ = existing.show();
         let _ = existing.set_focus();
         return;
@@ -385,6 +388,8 @@ fn open_window(app: &AppHandle, label: &str, title: &str, w: f64, h: f64) {
         .title(title)
         .inner_size(w, h)
         .min_inner_size(420.0, 480.0)
+        .position(cx, cy)
+        .visible(false)
         .resizable(true)
         .build()
     {

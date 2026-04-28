@@ -529,6 +529,77 @@ pub fn set_onboarding_indicator(needed: bool, app: AppHandle) {
     crate::tray::set_setup_needed(&app, needed);
 }
 
+/// Read the running app's version straight out of the bundle's Info.plist
+/// (whatever was in tauri.conf.json at build time). Settings shows this so
+/// users can tell which release they're on.
+#[tauri::command]
+pub fn app_version(app: AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+#[derive(Serialize)]
+pub struct UpdateCheck {
+    pub current: String,
+    pub latest: String,
+    pub update_available: bool,
+    pub release_url: String,
+}
+
+/// Hit the GitHub Releases API for the latest tag and compare to the
+/// running version. Returns enough info for Settings to show the right
+/// message (up-to-date / update-available + link to the release page).
+#[tauri::command]
+pub async fn check_for_update(app: AppHandle) -> Result<UpdateCheck, String> {
+    let current = app.package_info().version.to_string();
+
+    #[derive(serde::Deserialize)]
+    struct GhRelease {
+        tag_name: String,
+        html_url: String,
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .user_agent(format!("soll/{current}"))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let resp = client
+        .get("https://api.github.com/repos/mithun-builds/soll/releases/latest")
+        .send()
+        .await
+        .map_err(|e| format!("github api: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("github api returned {}", resp.status()));
+    }
+
+    let release: GhRelease = resp
+        .json()
+        .await
+        .map_err(|e| format!("parse release json: {e}"))?;
+    let latest = release.tag_name.trim_start_matches('v').to_string();
+    let update_available = version_lt(&current, &latest);
+
+    Ok(UpdateCheck {
+        current,
+        latest,
+        update_available,
+        release_url: release.html_url,
+    })
+}
+
+/// Numeric semver-ish comparison ("0.10.0" > "0.9.0", unlike a string
+/// compare). Strips a leading `v` for both sides so "v0.2.9" matches "0.2.9".
+fn version_lt(a: &str, b: &str) -> bool {
+    fn parts(v: &str) -> Vec<u32> {
+        v.trim_start_matches('v')
+            .split('.')
+            .filter_map(|s| s.parse().ok())
+            .collect()
+    }
+    parts(a) < parts(b)
+}
+
 // ── settings (existing) ────────────────────────────────────────────────────
 
 #[tauri::command]

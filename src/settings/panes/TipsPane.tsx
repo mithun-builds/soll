@@ -157,28 +157,6 @@ export function TipsPane() {
         </ul>
       </div>
 
-      {/* ── List shortcuts ─────────────────────────────────────────── */}
-      <div className="pane-section tips-section">
-        <h2>Format a list while dictating</h2>
-        <p className="subtle">
-          Start your sentence with one of these phrases and Soll formats the
-          rest as a list automatically.
-        </p>
-        <ul className="tips-list">
-          <li>
-            <code>bullet list …</code> or <code>bullets …</code> — bulleted list
-          </li>
-          <li>
-            <code>numbered list …</code> or <code>ordinal list …</code> —
-            numbered list
-          </li>
-        </ul>
-        <p className="hint-callout">
-          <em>"ordinal list apples, bananas, milk"</em> →{" "}
-          <code>1. Apples · 2. Bananas · 3. Milk</code>
-        </p>
-      </div>
-
       {/* ── Self-corrections ───────────────────────────────────────── */}
       <div className="pane-section tips-section">
         <h2>Self-correct mid-sentence</h2>

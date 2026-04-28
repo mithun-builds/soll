@@ -13,6 +13,13 @@ type Update = {
   ai_cleanup_enabled?: boolean;
 };
 
+type UpdateCheck = {
+  current: string;
+  latest: string;
+  update_available: boolean;
+  release_url: string;
+};
+
 export function GeneralPane() {
   const [s, setS] = useState<Snapshot | null>(null);
   const [userNameDraft, setUserNameDraft] = useState("");
@@ -20,6 +27,10 @@ export function GeneralPane() {
     "idle",
   );
   const [err, setErr] = useState<string | null>(null);
+  const [version, setVersion] = useState<string>("");
+  const [checking, setChecking] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<UpdateCheck | null>(null);
+  const [updateErr, setUpdateErr] = useState<string | null>(null);
 
   const refresh = async () => {
     try {
@@ -33,7 +44,21 @@ export function GeneralPane() {
 
   useEffect(() => {
     refresh();
+    invoke<string>("app_version").then(setVersion).catch(() => {});
   }, []);
+
+  const checkForUpdate = async () => {
+    setChecking(true);
+    setUpdateErr(null);
+    try {
+      const info = await invoke<UpdateCheck>("check_for_update");
+      setUpdateInfo(info);
+    } catch (e) {
+      setUpdateErr(String(e));
+    } finally {
+      setChecking(false);
+    }
+  };
 
   const update = async (u: Update) => {
     setSaveState("saving");
@@ -103,6 +128,35 @@ export function GeneralPane() {
           Change it in <strong>Skills → email → Edit markdown</strong>.
           Hotkey rebinding is planned for a future update.
         </p>
+      </div>
+
+      <div className="pane-section version-row">
+        <span className="subtle">Version</span>
+        <code>{version ? `v${version}` : "…"}</code>
+        <button
+          type="button"
+          className="secondary"
+          onClick={checkForUpdate}
+          disabled={checking}
+        >
+          {checking ? "Checking…" : "Check for updates"}
+        </button>
+        {updateInfo && !updateInfo.update_available && (
+          <span className="subtle version-status">Up to date</span>
+        )}
+        {updateInfo && updateInfo.update_available && (
+          <a
+            href={updateInfo.release_url}
+            target="_blank"
+            rel="noreferrer"
+            className="version-status version-status--available"
+          >
+            v{updateInfo.latest} available →
+          </a>
+        )}
+        {updateErr && (
+          <span className="subtle version-status">Couldn't check</span>
+        )}
       </div>
     </>
   );
