@@ -245,7 +245,10 @@
     /* ── Skills section ──────────────────────────────── */
     .skills-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      /* Always three columns on desktop — we ship exactly three example
+         cards and want them on the same row regardless of viewport width.
+         Mobile collapses to a single column via the 768px media query. */
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 16px;
     }
     .skill-card {
@@ -292,7 +295,8 @@
     .phrases { background: var(--bg-card); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
     .phrases-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      /* Match Skills — three columns on desktop, one column on mobile. */
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 16px;
     }
     .phrase-card {
@@ -466,6 +470,10 @@
          alignment doesn't apply, so add explicit spacing between them. */
       .steps { gap: 56px; }
       .steps::before { display: none; }
+      /* Stack skills/phrases vertically on narrow viewports — three
+         minmax(0,1fr) columns would squeeze into unreadable strips. */
+      .skills-grid,
+      .phrases-grid { grid-template-columns: 1fr; }
       .feature-card { border-right: none; border-bottom: 1px solid var(--border); }
       .feature-card:last-child { border-bottom: none; }
       .nav-links .btn-ghost { display: none; }
