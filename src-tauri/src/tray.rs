@@ -44,6 +44,12 @@ static ONBOARDING_ITEM: Lazy<Mutex<Option<MenuItem<Wry>>>> = Lazy::new(|| Mutex:
 /// a freshly-built one when the Setup Guide entry needs to appear/disappear.
 static TRAY_MENU: Lazy<Mutex<Option<Menu<Wry>>>> = Lazy::new(|| Mutex::new(None));
 
+/// Stash for the "Update available" tray entry. Set by the background poll
+/// in lib.rs whenever GitHub has a newer release than what's running.
+/// Holds (latest_version, release_url). `None` while up-to-date.
+pub(crate) static UPDATE_AVAILABLE: Lazy<Mutex<Option<(String, String)>>> =
+    Lazy::new(|| Mutex::new(None));
+
 /// Status line in the tray menu, rewritten on every state change.
 static STATUS_ITEM: OnceCell<MenuItem<Wry>> = OnceCell::new();
 
@@ -108,6 +114,13 @@ pub fn build_tray(app: &AppHandle) -> Result<()> {
                 "quit" => app.exit(0),
                 "settings" => open_settings_window(app),
                 "onboarding" => open_onboarding_window(app),
+                "update" => {
+                    if let Some((_, url)) = UPDATE_AVAILABLE.lock().as_ref() {
+                        let _ = std::process::Command::new("open")
+                            .arg(url)
+                            .spawn();
+                    }
+                }
                 _ => {}
             }
         })
@@ -172,6 +185,17 @@ fn rebuild_menu(app: &AppHandle) {
             }
         }
         Err(e) => log::error!("rebuild_menu: {e:?}"),
+    }
+}
+
+/// Background update poll calls this when GitHub reports a newer release
+/// (or when the user has caught up and the entry should disappear).
+pub fn set_update_available(app: &AppHandle, info: Option<(String, String)>) {
+    let mut g = UPDATE_AVAILABLE.lock();
+    if *g != info {
+        *g = info;
+        drop(g);
+        rebuild_menu(app);
     }
 }
 
@@ -335,6 +359,15 @@ fn build_menu(app: &AppHandle) -> Result<Menu<Wry>> {
         None
     };
 
+    // "Update available" is similar — present only while there's actually
+    // a newer release upstream, otherwise hidden completely.
+    let update_entry = if let Some((ver, _)) = UPDATE_AVAILABLE.lock().as_ref() {
+        let label = format!("Update available — v{ver}");
+        Some(MenuItem::with_id(app, "update", &label, true, None::<&str>)?)
+    } else {
+        None
+    };
+
     let mut items: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = vec![
         &status_item,
         &hotkey_item,
@@ -343,6 +376,9 @@ fn build_menu(app: &AppHandle) -> Result<Menu<Wry>> {
     ];
     if let Some(ref ob) = onboarding {
         items.push(ob);
+    }
+    if let Some(ref u) = update_entry {
+        items.push(u);
     }
     items.push(&sep2);
     items.push(&quit);

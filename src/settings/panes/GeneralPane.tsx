@@ -87,16 +87,16 @@ export function GeneralPane() {
 
   return (
     <>
-      <h1>General</h1>
-      <p className="subtle">Your identity and hotkey — AI settings live in Models.</p>
+      {/* ── Identity ── */}
+      <h1>Identity</h1>
+      <p className="subtle">
+        Your name appears in dictated emails and is available to custom
+        skills as <code>[name]</code>.
+      </p>
 
       <form className="pane-section" onSubmit={onSaveText}>
         <label>
           <span className="field-label">Your name</span>
-          <span className="subtle hint">
-            Appears at the bottom of dictated emails and can be referenced in
-            custom skills.
-          </span>
           <input
             type="text"
             placeholder="e.g. Mithun"
@@ -118,17 +118,25 @@ export function GeneralPane() {
         </button>
       </form>
 
+      {/* ── Hotkey ── */}
+      <h1>Hotkey</h1>
+      <p className="subtle">The shortcut you hold to start dictating.</p>
+
       <div className="pane-section readonly-grid">
         <div className="readonly-row">
-          <span className="subtle">Hotkey</span>
+          <span className="subtle">Push-to-talk</span>
           <code>⌃⇧Space</code>
         </div>
         <p className="subtle hint">
-          Email sign-off now lives inside the Email skill's output template.
-          Change it in <strong>Skills → email → Edit markdown</strong>.
           Hotkey rebinding is planned for a future update.
         </p>
       </div>
+
+      {/* ── About ── */}
+      <h1>About</h1>
+      <p className="subtle">
+        The release you're on, and a one-click way to see if there's a newer one.
+      </p>
 
       <div className="pane-section version-row">
         <span className="subtle">Version</span>

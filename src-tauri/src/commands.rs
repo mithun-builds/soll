@@ -545,13 +545,11 @@ pub struct UpdateCheck {
     pub release_url: String,
 }
 
-/// Hit the GitHub Releases API for the latest tag and compare to the
-/// running version. Returns enough info for Settings to show the right
-/// message (up-to-date / update-available + link to the release page).
-#[tauri::command]
-pub async fn check_for_update(app: AppHandle) -> Result<UpdateCheck, String> {
-    let current = app.package_info().version.to_string();
-
+/// Core fetch + compare. Shared by the IPC command (Settings → manual
+/// "Check for updates") and the background watcher in lib.rs (one shot at
+/// launch + every 24 h thereafter, surfaces an "Update available" row in
+/// the tray menu).
+pub(crate) async fn fetch_latest_release(current: &str) -> Result<UpdateCheck, String> {
     #[derive(serde::Deserialize)]
     struct GhRelease {
         tag_name: String,
@@ -578,14 +576,23 @@ pub async fn check_for_update(app: AppHandle) -> Result<UpdateCheck, String> {
         .await
         .map_err(|e| format!("parse release json: {e}"))?;
     let latest = release.tag_name.trim_start_matches('v').to_string();
-    let update_available = version_lt(&current, &latest);
+    let update_available = version_lt(current, &latest);
 
     Ok(UpdateCheck {
-        current,
+        current: current.to_string(),
         latest,
         update_available,
         release_url: release.html_url,
     })
+}
+
+/// Hit the GitHub Releases API for the latest tag and compare to the
+/// running version. Returns enough info for Settings to show the right
+/// message (up-to-date / update-available + link to the release page).
+#[tauri::command]
+pub async fn check_for_update(app: AppHandle) -> Result<UpdateCheck, String> {
+    let current = app.package_info().version.to_string();
+    fetch_latest_release(&current).await
 }
 
 /// Numeric semver-ish comparison ("0.10.0" > "0.9.0", unlike a string

@@ -185,6 +185,31 @@ pub fn run() {
                 }
             });
 
+            // Update-availability poll. One shot at launch + once a day,
+            // so the user sees an "Update available — vX.Y.Z" entry in the
+            // tray menu without having to manually click "Check for updates"
+            // in Settings. Daily is plenty — releases aren't more frequent.
+            let app_for_update = app.handle().clone();
+            let current_version = app.handle().package_info().version.to_string();
+            tauri::async_runtime::spawn(async move {
+                use std::time::Duration;
+                loop {
+                    match commands::fetch_latest_release(&current_version).await {
+                        Ok(info) if info.update_available => {
+                            tray::set_update_available(
+                                &app_for_update,
+                                Some((info.latest, info.release_url)),
+                            );
+                        }
+                        Ok(_) => {
+                            tray::set_update_available(&app_for_update, None);
+                        }
+                        Err(e) => log::debug!("update check skipped: {e}"),
+                    }
+                    tokio::time::sleep(Duration::from_secs(24 * 60 * 60)).await;
+                }
+            });
+
             Ok(())
         })
         .build(tauri::generate_context!())

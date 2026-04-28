@@ -410,10 +410,10 @@
     }
     .privacy-pill-icon {
       width: 36px; height: 36px; border-radius: 8px; flex-shrink: 0;
-      background: rgba(74,222,128,0.08); border: 1px solid rgba(74,222,128,0.15);
+      background: rgba(253,224,71,0.08); border: 1px solid rgba(253,224,71,0.15);
       display: flex; align-items: center; justify-content: center;
-      font-size: 16px;
     }
+    .privacy-pill-icon svg { width: 18px; height: 18px; color: var(--accent); }
     .privacy-pill-title { font-size: 14px; font-weight: 600; margin-bottom: 3px; }
     .privacy-pill-sub { font-size: 12.5px; color: var(--fg-sub); line-height: 1.5; }
 
@@ -615,13 +615,6 @@
         <div class="skill-arrow">Output →</div>
         <div class="skill-output">"I would like to follow up on our previous discussion regarding the project timeline…"</div>
       </div>
-      <div class="skill-card reveal" style="transition-delay:240ms">
-        <div class="skill-trigger"><span class="skill-trigger-prefix">skill </span>translate to Spanish</div>
-        <div class="skill-name">Translate</div>
-        <div class="skill-desc">Speak in English, get instant output in any language. Works with any language Ollama supports.</div>
-        <div class="skill-arrow">Output →</div>
-        <div class="skill-output">"Hola equipo, quería compartir una actualización rápida sobre el proyecto…"</div>
-      </div>
     </div>
   </div>
 </section>
@@ -655,13 +648,6 @@
           <span class="phrase-badge">instant</span>
         </div>
         <div class="phrase-body">Best,<br>Mithun<br>+91 99999 00000</div>
-      </div>
-      <div class="phrase-card reveal" style="transition-delay:240ms">
-        <div class="phrase-header">
-          <div class="phrase-trigger"><span class="phrase-prefix">phrase </span>lgtm</div>
-          <span class="phrase-badge">instant</span>
-        </div>
-        <div class="phrase-body">Looks good to me! Happy to approve once the review comments are addressed.</div>
       </div>
     </div>
     <p class="reveal" style="text-align:center; margin-top:40px; font-size:14px; color:var(--fg-dim);">
@@ -736,21 +722,42 @@
       </div>
       <div class="privacy-pills reveal" style="transition-delay:120ms">
         <div class="privacy-pill">
-          <div class="privacy-pill-icon">🎙️</div>
+          <div class="privacy-pill-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="4" y="4" width="16" height="16" rx="2"/>
+              <rect x="9" y="9" width="6" height="6"/>
+              <line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/>
+              <line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/>
+              <line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/>
+              <line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/>
+            </svg>
+          </div>
           <div>
             <div class="privacy-pill-title">Whisper runs on-device</div>
             <div class="privacy-pill-sub">OpenAI's Whisper model is downloaded once and runs entirely in Metal on your Mac. No API key needed.</div>
           </div>
         </div>
         <div class="privacy-pill">
-          <div class="privacy-pill-icon">🤖</div>
+          <div class="privacy-pill-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2h-14a2 2 0 0 1-2-2z"/>
+              <polyline points="9 22 9 12 15 12 15 22"/>
+            </svg>
+          </div>
           <div>
             <div class="privacy-pill-title">Ollama stays local</div>
             <div class="privacy-pill-sub">AI cleanup uses Ollama running on your machine. Your text never leaves your device for processing.</div>
           </div>
         </div>
         <div class="privacy-pill">
-          <div class="privacy-pill-icon">📖</div>
+          <div class="privacy-pill-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+              <circle cx="9" cy="7" r="4"/>
+              <line x1="17" y1="8" x2="22" y2="13"/>
+              <line x1="22" y1="8" x2="17" y2="13"/>
+            </svg>
+          </div>
           <div>
             <div class="privacy-pill-title">No account, ever</div>
             <div class="privacy-pill-sub">No login, no telemetry, no subscription. Soll is free software — use it for as long as you want.</div>
