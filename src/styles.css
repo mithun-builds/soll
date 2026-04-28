@@ -164,6 +164,11 @@ code {
   font-weight: 680;
   letter-spacing: -0.015em;
 }
+/* Extra breathing room before every h1 after the first — gap: 18px alone
+   makes adjacent sections feel like one continuous list. This pushes them
+   apart so each `<h1>` reads as a real section break, matching how Models
+   visually separates "Whisper model" from "AI model". */
+.pane > h1:not(:first-child) { margin-top: 20px; }
 .pane h2 {
   font-size: 13px;
   font-weight: 650;
@@ -692,13 +697,21 @@ button.danger-btn:hover {
   font-size: 13px;
 }
 
+/* About → Version row. Self-contained styled container (no pane-section
+   wrapper, which would force flex-direction: column and stack everything). */
 .version-row {
   display: flex;
+  flex-direction: row;
   align-items: center;
   gap: 12px;
+  padding: 12px 14px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
   font-size: 13px;
 }
 .version-row code { font-size: 12px; }
+/* Button sits at the far right; status text floats next to the version code. */
 .version-row button { margin-left: auto; }
 .version-status {
   font-size: 12px;

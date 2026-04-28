@@ -364,9 +364,20 @@ function deriveSteps(s: OnboardingStatus, opts: DeriveOpts): StepDef[] {
   const activeModel = opts.models.find(m => m.is_active);
   const downloadingModel = opts.models.find(m => m.is_downloading);
   const cachedModel = opts.models.find(m => m.is_cached);
-  // The model the toggle would act on right now: the one downloading (if any),
-  // otherwise the cached one (if any), otherwise the active selection.
-  const focusModel = downloadingModel ?? cachedModel ?? activeModel;
+  // Pick the model the description should talk about. Order matters:
+  //   1. Anything actively downloading right now.
+  //   2. The active model — but only if it's cached (i.e. truly in use).
+  //      Without this, when multiple models are cached `cachedModel` returns
+  //      the *first* one in WhisperModel::ALL (e.g. Tiny) even if Medium is
+  //      the one Soll is actually using. That mismatch made the desc say
+  //      "Tiny is ready" while the toggle correctly highlighted Medium.
+  //   3. Any cached model, as a last-resort fallback.
+  //   4. The active selection (may not be cached yet — pre-download).
+  const focusModel =
+    downloadingModel
+    ?? (activeModel?.is_cached ? activeModel : undefined)
+    ?? cachedModel
+    ?? activeModel;
   const focusLabel = focusModel
     ? `${focusModel.label} (${focusModel.size})`
     : "Small (466 MB)";

@@ -138,17 +138,9 @@ export function GeneralPane() {
         The release you're on, and a one-click way to see if there's a newer one.
       </p>
 
-      <div className="pane-section version-row">
+      <div className="version-row">
         <span className="subtle">Version</span>
         <code>{version ? `v${version}` : "…"}</code>
-        <button
-          type="button"
-          className="secondary"
-          onClick={checkForUpdate}
-          disabled={checking}
-        >
-          {checking ? "Checking…" : "Check for updates"}
-        </button>
         {updateInfo && !updateInfo.update_available && (
           <span className="subtle version-status">Up to date</span>
         )}
@@ -165,6 +157,14 @@ export function GeneralPane() {
         {updateErr && (
           <span className="subtle version-status">Couldn't check</span>
         )}
+        <button
+          type="button"
+          className="secondary"
+          onClick={checkForUpdate}
+          disabled={checking}
+        >
+          {checking ? "Checking…" : "Check for updates"}
+        </button>
       </div>
     </>
   );
