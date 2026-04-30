@@ -722,6 +722,52 @@ button.danger-btn:hover {
 }
 .version-status--available:hover { text-decoration: underline; }
 
+/* ── Hotkey row ───────────────────────────────────────────────────── */
+
+.hotkey-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 13px;
+}
+.hotkey-row code { font-size: 12px; }
+/* Verbose form sits next to the glyph form so users who don't recognise
+   ⌃/⌥/⌘ can still read the binding. Dimmed so the glyph stays primary. */
+.hotkey-verbose {
+  font-size: 12px;
+  opacity: 0.55;
+}
+/* First button absorbs available width, pushing all controls to the right. */
+.hotkey-row button { margin-left: auto; }
+.hotkey-row button + button { margin-left: 0; }
+.hotkey-row--capturing {
+  border-color: var(--accent);
+}
+.hotkey-row--capturing code {
+  color: var(--accent);
+}
+.hotkey-error {
+  color: var(--accent);
+}
+.hotkey-notes {
+  list-style: disc;
+  padding-left: 20px;
+  margin-top: 10px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.hotkey-notes li::marker {
+  opacity: 0.5;
+}
+
 /* ── dictionary add row ───────────────────────────────────────────── */
 
 .dict-add {

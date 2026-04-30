@@ -26,6 +26,12 @@ pub const KEY_ONBOARDING_DISMISSED: &str = "onboarding_dismissed";
 /// Used by the onboarding window to tick the "Try dictating" step.
 pub const KEY_HAS_DICTATED: &str = "has_dictated";
 
+/// Push-to-talk shortcut, stored as a tauri-plugin-global-shortcut accelerator
+/// string (e.g. "Control+Shift+Space"). Settings → Hotkey writes here; lib.rs
+/// reads it on startup and re-registers when the user changes it.
+pub const KEY_SHORTCUT: &str = "ptt_shortcut";
+pub const DEFAULT_SHORTCUT: &str = "Control+Shift+Space";
+
 pub const DEFAULT_AI_CLEANUP: bool = true;
 
 pub struct Settings {

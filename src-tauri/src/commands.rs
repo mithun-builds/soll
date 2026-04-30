@@ -537,6 +537,55 @@ pub fn app_version(app: AppHandle) -> String {
     app.package_info().version.to_string()
 }
 
+/// Return the currently-registered push-to-talk shortcut as an accelerator
+/// string (e.g. "Control+Shift+Space"). Settings reads this on mount to
+/// display the live binding.
+#[tauri::command]
+pub fn get_shortcut() -> String {
+    crate::CURRENT_SHORTCUT.lock().to_string()
+}
+
+/// Replace the push-to-talk shortcut. Persists the new accelerator to
+/// settings, unregisters the old binding from the OS, registers the new
+/// one, and updates the in-memory mutex so the global handler picks it up
+/// without restart. Rejects malformed accelerators *and* combos the OS
+/// won't accept (e.g. another app already owns them).
+#[tauri::command]
+pub fn set_shortcut(
+    accelerator: String,
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    use std::str::FromStr;
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
+
+    let new = Shortcut::from_str(&accelerator)
+        .map_err(|e| format!("invalid shortcut {accelerator:?}: {e}"))?;
+
+    let old = crate::CURRENT_SHORTCUT.lock().clone();
+    if new == old {
+        return Ok(());
+    }
+
+    // Register the new one before unregistering the old, so a failure
+    // (e.g. combo already taken by another app) doesn't leave us with
+    // *no* push-to-talk shortcut at all.
+    app.global_shortcut()
+        .register(new.clone())
+        .map_err(|e| format!("could not register {accelerator:?}: {e}"))?;
+    if let Err(e) = app.global_shortcut().unregister(old) {
+        log::warn!("unregister old shortcut failed (non-fatal): {e}");
+    }
+
+    *crate::CURRENT_SHORTCUT.lock() = new;
+    state
+        .settings
+        .set(crate::settings::KEY_SHORTCUT, &accelerator)
+        .map_err(|e| e.to_string())?;
+    log::info!("push-to-talk shortcut changed to {accelerator}");
+    Ok(())
+}
+
 #[derive(Serialize)]
 pub struct UpdateCheck {
     pub current: String,

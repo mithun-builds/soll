@@ -21,10 +21,13 @@ pub mod model;
 pub mod skills;
 pub mod transcribe;
 
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use log::{error, info};
+use log::{error, info, warn};
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use tauri::Manager;
 
 /// Set by `restart_app` so the ExitRequested hook below doesn't veto the
@@ -32,23 +35,36 @@ use tauri::Manager;
 /// "Restart Soll" silently no-ops because we treat the close as just-another
 /// window-close and prevent the exit.
 pub(crate) static APP_RESTARTING: AtomicBool = AtomicBool::new(false);
-use tauri_plugin_global_shortcut::{
-    Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
-};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
+use crate::settings::{DEFAULT_SHORTCUT, KEY_SHORTCUT};
 use crate::state::AppState;
 use crate::tray::TrayState;
 
-fn push_to_talk_shortcut() -> Shortcut {
-    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space)
+/// Currently-registered push-to-talk shortcut. Read by the global-shortcut
+/// handler on every key press to verify the firing combo matches; written by
+/// `commands::set_shortcut` after a successful unregister/register swap so a
+/// rebind takes effect without restart.
+pub(crate) static CURRENT_SHORTCUT: Lazy<Mutex<Shortcut>> = Lazy::new(|| {
+    Mutex::new(
+        Shortcut::from_str(DEFAULT_SHORTCUT)
+            .expect("DEFAULT_SHORTCUT must parse"),
+    )
+});
+
+/// Resolve the saved accelerator into a `Shortcut`, falling back to the
+/// default if the stored value is corrupt or no longer parseable.
+pub(crate) fn resolve_shortcut(saved: &str) -> Shortcut {
+    Shortcut::from_str(saved).unwrap_or_else(|e| {
+        warn!("invalid stored shortcut {saved:?} ({e}); falling back to default");
+        Shortcut::from_str(DEFAULT_SHORTCUT).expect("DEFAULT_SHORTCUT must parse")
+    })
 }
 
 pub fn run() {
     // Must happen before whisper-rs spins up its Metal context.
     metal::ensure_metal_resources();
 
-    let ptt = push_to_talk_shortcut();
-    let ptt_for_handler = ptt.clone();
 
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -80,6 +96,8 @@ pub fn run() {
             commands::set_onboarding_indicator,
             commands::app_version,
             commands::check_for_update,
+            commands::get_shortcut,
+            commands::set_shortcut,
             onboarding::onboarding_status,
             onboarding::onboarding_dismiss,
             onboarding::request_mic_permission,
@@ -94,7 +112,12 @@ pub fn run() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
-                    if shortcut != &ptt_for_handler {
+                    // Compare against the live, user-customisable shortcut —
+                    // a closure-captured constant would lock us to whatever
+                    // was set at startup and miss every rebind made via
+                    // Settings → Hotkey.
+                    let current = CURRENT_SHORTCUT.lock().clone();
+                    if shortcut != &current {
                         return;
                     }
                     let state = match app.try_state::<Arc<AppState>>() {
@@ -143,8 +166,15 @@ pub fn run() {
 
             tray::build_tray(app.handle())?;
             overlay::build(app.handle())?;
-            app.global_shortcut().register(ptt.clone())?;
-            info!("registered push-to-talk: Ctrl+Shift+Space");
+
+            // Load the user's saved shortcut (or fall back to default), seed
+            // the global mutex so the handler matches against it, and
+            // register with the OS.
+            let saved = state.settings.get_or_default(KEY_SHORTCUT, DEFAULT_SHORTCUT);
+            let shortcut = resolve_shortcut(&saved);
+            *CURRENT_SHORTCUT.lock() = shortcut.clone();
+            app.global_shortcut().register(shortcut.clone())?;
+            info!("registered push-to-talk: {shortcut}");
 
             let st = state.clone();
             tauri::async_runtime::spawn(async move {
