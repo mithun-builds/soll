@@ -276,15 +276,42 @@ pub(crate) fn check_ollama_installed() -> bool {
         .any(|p| std::path::Path::new(p).exists())
 }
 
-/// Launch the Ollama .app via LaunchServices. No-op (well, an error logged
-/// by `open`) when Ollama is CLI-only; the frontend should keep that case
-/// on the "show install instructions" code path.
+/// Launch Ollama so its daemon starts listening on 11434.
+///
+/// Two install shapes are supported:
+///   * **App bundle** (`brew install --cask ollama` or the DMG) — prefer
+///     `open -a Ollama`. LaunchServices handles the menu-bar icon, login
+///     items, and lifecycle on logout.
+///   * **CLI only** (`brew install ollama` — the path the README's
+///     Step 5 actually recommends). Spawn `ollama serve` detached on the
+///     same port 11434 the `.app` would use, so `check_ollama_running`
+///     picks it up within the next 2-second poll tick.
+///
+/// Previously this was hard-coded to `open -a Ollama`, which silently
+/// failed for CLI-only installs and left the setup-guide "Open Ollama"
+/// button doing nothing.
 #[tauri::command]
 pub fn open_ollama() {
-    let _ = std::process::Command::new("open")
-        .arg("-a")
-        .arg("Ollama")
-        .spawn();
+    if std::path::Path::new("/Applications/Ollama.app").exists() {
+        let _ = std::process::Command::new("open")
+            .arg("-a")
+            .arg("Ollama")
+            .spawn();
+        return;
+    }
+    const CLI_CANDIDATES: &[&str] = &["/opt/homebrew/bin/ollama", "/usr/local/bin/ollama"];
+    if let Some(bin) = CLI_CANDIDATES
+        .iter()
+        .find(|p| std::path::Path::new(p).exists())
+    {
+        // Detach stdio so the daemon survives Soll quitting and doesn't
+        // spam the dev console with Ollama's startup logs.
+        let _ = std::process::Command::new(bin)
+            .arg("serve")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
 }
 
 /// Ping Ollama with a 1-second timeout. Called on every poll tick so the
