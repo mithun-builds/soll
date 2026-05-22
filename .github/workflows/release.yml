@@ -162,11 +162,25 @@ jobs:
             # while Soll is open and brew handles it cleanly.
             uninstall quit: "com.soll.app"
 
-            zap trash: [
-              "~/Library/Application Support/com.soll.app",
-              "~/Library/Preferences/com.soll.app.plist",
-              "~/Library/Logs/com.soll.app",
-            ]
+            # \`brew uninstall --zap soll\` triggers this. Plain \`brew uninstall\`
+            # leaves user data alone — zap is the explicit opt-in for the
+            # "wipe everything" path. Covers the full set so a user who zaps
+            # and then reinstalls is treated as a brand-new user: no leftover
+            # config, no stale cache, no granted mic/accessibility carrying
+            # over from a previous install.
+            zap trash:  [
+                  "~/Library/Application Support/com.soll.app",
+                  "~/Library/Caches/com.soll.app",
+                  "~/Library/HTTPStorages/com.soll.app",
+                  "~/Library/Logs/com.soll.app",
+                  "~/Library/Preferences/com.soll.app.plist",
+                  "~/Library/Saved Application State/com.soll.app.savedState",
+                  "~/Library/WebKit/com.soll.app",
+                ],
+                script: {
+                  executable: "/usr/bin/tccutil",
+                  args:       ["reset", "All", "com.soll.app"],
+                }
           end
           EOF
           cd tap
