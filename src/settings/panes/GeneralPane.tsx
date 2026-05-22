@@ -337,9 +337,14 @@ export function GeneralPane() {
         {updateInfo && updateInfo.update_available && (
           <a
             href={updateInfo.release_url}
-            target="_blank"
-            rel="noreferrer"
             className="version-status version-status--available"
+            onClick={(e) => {
+              // Tauri 2 webviews don't honour target="_blank" — without
+              // intercepting, the click is a silent no-op. Keeping the href
+              // means screen-reader / copy-link / right-click still work.
+              e.preventDefault();
+              void invoke("open_url", { url: updateInfo.release_url });
+            }}
           >
             v{updateInfo.latest} available →
           </a>

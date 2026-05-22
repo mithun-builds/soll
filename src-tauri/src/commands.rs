@@ -458,6 +458,23 @@ pub fn open_settings_window_cmd(app: AppHandle) {
     crate::tray::open_settings_window(&app);
 }
 
+/// Open an external URL in the user's default browser. Tauri 2 webviews
+/// don't honour `<a target="_blank">` without an opener plugin, so the
+/// frontend invokes this for outbound links (e.g. the GitHub release page
+/// from the "update available" badge). Restricted to http/https to keep
+/// this from being a generic shell-out vector.
+#[tauri::command]
+pub fn open_url(url: String) -> Result<(), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err(format!("refusing to open non-http(s) url: {url}"));
+    }
+    std::process::Command::new("open")
+        .arg(&url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// Open System Settings to a specific Privacy pane.
 /// `section` is the URL fragment, e.g. "Privacy_Microphone" or
 /// "Privacy_Accessibility".

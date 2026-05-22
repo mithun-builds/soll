@@ -90,6 +90,7 @@ pub fn run() {
             commands::ollama_pull_active,
             commands::ollama_delete_active,
             commands::open_settings_window_cmd,
+            commands::open_url,
             commands::open_privacy_settings,
             commands::close_onboarding_window,
             commands::restart_app,
