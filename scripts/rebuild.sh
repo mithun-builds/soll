@@ -46,25 +46,65 @@ step "3/5  Replacing /Applications/Soll.app"
 rm -rf /Applications/Soll.app
 cp -R "$APP_SRC" /Applications/
 
-# ── 4. strip quarantine + re-sign ad-hoc + reset Accessibility ───────────────
-# Re-signing after copy: `cp -R` can lose the build-time ad-hoc signature,
-# which makes the kernel reject Accessibility (AXIsProcessTrusted returns
-# false even when the System Settings toggle is on). Re-binding the bundle
-# to a fresh ad-hoc signature here keeps that path working.
+# ── 4. patch Info.plist + strip+re-sign + reset Accessibility ────────────────
+# Three things happen here, in this exact order, to mirror the CI workflow
+# in `.github/workflows/release.yml`:
 #
-# But there's a second pitfall on rebuilds: each ad-hoc signature is unique,
-# so the previously-granted Accessibility TCC entry is bound to the OLD
-# binary's signature. System Settings keeps showing Soll toggled on but
-# AXIsProcessTrusted still returns false, because the kernel sees a
-# signature mismatch. Resetting the entry forces a fresh grant against the
-# new signature — the user toggles on once in Settings, restarts Soll
-# (via the onboarding's "Restart Soll to apply" button), and it sticks.
+# (a) Inject NSMicrophoneUsageDescription + NSAppleEventsUsageDescription
+#     into Info.plist. Tauri's config has no slot for these; without them
+#     macOS silently denies the mic prompt the very first time.
 #
-# Mic and AppleEvents don't have this signature-binding fragility, so we
-# leave those alone — the user keeps their granted mic across rebuilds.
-step "4/5  Stripping quarantine, re-signing, resetting Accessibility TCC"
-xattr -dr com.apple.quarantine /Applications/Soll.app
-codesign --force --deep --sign - /Applications/Soll.app 2>/dev/null || true
+# (b) Strip the existing signature, then re-sign ad-hoc. Two reasons:
+#       1. `cp -R` can drop the build-time signature, leaving Accessibility
+#          broken (AXIsProcessTrusted returns false even when System
+#          Settings shows ON).
+#       2. `pnpm tauri build` ships a *linker-signed* binary whose
+#          codesign identifier is a hash like `soll-dc34b220ba651dd5`
+#          instead of `com.soll.app`. TCC keys grants by that identifier,
+#          so the user's existing Accessibility grant doesn't apply to a
+#          linker-signed local build. Stripping + re-signing forces
+#          codesign to read Info.plist and use `com.soll.app`, matching
+#          the brew install and any prior TCC entry.
+#
+# (c) Reset the Accessibility TCC entry. Each ad-hoc signature is unique
+#     (different binary hash even with the same identifier), so the
+#     previously-granted entry can still be stale. Resetting forces a
+#     fresh grant against the new signature — toggle on once in Settings,
+#     restart Soll, sticks.
+#
+# Mic and AppleEvents don't have the signature-binding fragility, so we
+# leave those TCC entries alone — keeps the user's granted mic intact
+# across rebuilds.
+step "4/5  Patching Info.plist, re-signing, resetting Accessibility TCC"
+
+APP=/Applications/Soll.app
+PLIST="$APP/Contents/Info.plist"
+
+MIC_DESC='Soll needs microphone access to transcribe your speech locally.'
+AE_DESC='Soll uses AppleScript to paste transcribed text into the focused app.'
+
+/usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string '$MIC_DESC'" "$PLIST" 2>/dev/null || \
+/usr/libexec/PlistBuddy -c "Set :NSMicrophoneUsageDescription '$MIC_DESC'" "$PLIST"
+
+/usr/libexec/PlistBuddy -c "Add :NSAppleEventsUsageDescription string '$AE_DESC'" "$PLIST" 2>/dev/null || \
+/usr/libexec/PlistBuddy -c "Set :NSAppleEventsUsageDescription '$AE_DESC'" "$PLIST"
+
+xattr -dr com.apple.quarantine "$APP"
+codesign --remove-signature "$APP" 2>/dev/null || true
+codesign --force --deep --sign - "$APP"
+
+# Verify the identifier — should be com.soll.app, not soll-<hash>.
+# `--identifier` is a *signing* flag; passing it to `-d` prints the usage
+# banner and exits non-zero. Use `-dv` (verbose display) and pull the
+# `Identifier=…` line out of stderr.
+IDENT=$(codesign -dv "$APP/Contents/MacOS/soll" 2>&1 | awk -F= '/^Identifier=/{print $2; exit}')
+note "signing identifier: $IDENT"
+if [[ "$IDENT" != "com.soll.app" ]]; then
+  echo "✗ unexpected signing identifier (got '$IDENT', expected com.soll.app)" >&2
+  echo "  Accessibility grants won't apply. Check codesign + Info.plist." >&2
+  exit 1
+fi
+
 tccutil reset Accessibility com.soll.app >/dev/null 2>&1 || true
 
 # ── 5. launch ────────────────────────────────────────────────────────────────

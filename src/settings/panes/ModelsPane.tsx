@@ -17,6 +17,9 @@ type OllamaModel = {
   size: string;
   is_active: boolean;
   is_pulled: boolean;
+  /** Streaming pull progress 0–100, or null when no pull is active for
+   *  this model. Populated by the streaming Ollama pull task in Rust. */
+  pull_pct: number | null;
 };
 
 type Snapshot = {
@@ -77,6 +80,21 @@ export function ModelsPane() {
   const activateOllama = async (tag: string) => {
     try {
       await invoke("ollama_model_set", { tag });
+      refresh();
+    } catch (e) {
+      setErr(String(e));
+    }
+  };
+
+  /** Set the model as active AND kick off a streaming pull. Used when
+   *  the user clicks "Pull" on an unpulled model — mirrors the onboarding
+   *  picker so Settings and onboarding behave identically. The pull task
+   *  runs in the background; the 1.5 s refresh below picks up live
+   *  `pull_pct` updates from `ollama_models_list`. */
+  const pullOllama = async (tag: string) => {
+    try {
+      await invoke("ollama_model_set", { tag });
+      void invoke("ollama_pull_active");
       refresh();
     } catch (e) {
       setErr(String(e));
@@ -176,36 +194,59 @@ export function ModelsPane() {
         </div>
       </div>
       <p className="subtle">
-        Used for AI cleanup and skills. Pull models with{" "}
-        <code>ollama pull &lt;model&gt;</code>, then click to activate.
+        Used for AI cleanup and skills. Click <strong>Pull</strong> to download
+        a model — first pull is 1.5–5 GB and runs against Ollama in the
+        background. Once pulled, click the row to make it the active model.
       </p>
 
       <div className="pane-section">
         <ul className="row-list">
-          {ollamaModels.map((m) => (
-            <li
-              key={m.tag}
-              className={`row ${m.is_pulled ? "selectable" : ""} ${m.is_active ? "active" : ""}`}
-              onClick={() => m.is_pulled && !m.is_active && activateOllama(m.tag)}
-            >
-              <div className="row-title">
-                {m.is_active ? "✓ " : ""}
-                {m.display_name}{" "}
-                <span className="subtle">
-                  ({m.author} · {m.size})
-                </span>
-              </div>
-              {m.is_active ? (
-                <span className="badge">active</span>
-              ) : m.is_pulled ? (
-                <span className="row-hint subtle">Click to activate</span>
-              ) : (
-                <span className="row-hint subtle">
-                  <code>ollama pull {m.tag}</code>
-                </span>
-              )}
-            </li>
-          ))}
+          {ollamaModels.map((m) => {
+            // Important: a row can be BOTH active and pulling (the user
+            // clicked Pull on an already-active model, or the streaming
+            // pull is in flight after `ollama_model_set` selected this
+            // tag). The pulling state needs to win in the status column
+            // so the user sees live progress; otherwise the "active"
+            // badge masks the percentage and the row looks frozen.
+            const isPulling = m.pull_pct != null;
+            const anyPulling = ollamaModels.some((x) => x.pull_pct != null);
+            const rowClickable = m.is_pulled && !m.is_active && !anyPulling;
+            return (
+              <li
+                key={m.tag}
+                className={`row ${rowClickable ? "selectable" : ""} ${m.is_active ? "active" : ""}`}
+                onClick={() => rowClickable && activateOllama(m.tag)}
+              >
+                <div className="row-title">
+                  {m.is_active ? "✓ " : ""}
+                  {m.display_name}{" "}
+                  <span className="subtle">
+                    ({m.author} · {m.size})
+                  </span>
+                </div>
+                {isPulling ? (
+                  <span className="row-hint subtle">Pulling… {m.pull_pct}%</span>
+                ) : m.is_active ? (
+                  <span className="badge">active</span>
+                ) : m.is_pulled ? (
+                  <span className="row-hint subtle">Click to activate</span>
+                ) : (
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={anyPulling}
+                    onClick={(e) => {
+                      // Stop the row's onClick from also firing.
+                      e.stopPropagation();
+                      void pullOllama(m.tag);
+                    }}
+                  >
+                    Pull
+                  </button>
+                )}
+              </li>
+            );
+          })}
         </ul>
       </div>
 

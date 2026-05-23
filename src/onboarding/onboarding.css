@@ -453,6 +453,84 @@
   gap: 8px;
 }
 
+/* Row of action buttons — used when a step has two related actions
+   that should sit side-by-side (e.g. "Reset & re-grant" + "Restart Soll
+   to apply" on the Accessibility step). Wraps to two lines on narrow
+   widths so neither button gets clipped. */
+.ob-step-actions-row {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+/* Always-visible explainer above the install-diagnostics checklist —
+   answers the "what even is Ollama?" question for first-time users
+   without making them click a dropdown. */
+.ob-ollama-explainer {
+  margin: 0;
+  padding: 0;
+  max-width: 480px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted, #9ca3af);
+  text-align: center;
+}
+.ob-ollama-explainer strong {
+  color: var(--text, #e5e7eb);
+}
+.ob-ollama-explainer code {
+  font-size: 12px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* Ollama install diagnostics — three-row checklist surfaced on Step 4
+   when Ollama isn't running, so the user can see at a glance which
+   install pieces are present and which are missing. */
+.ob-install-diag {
+  list-style: none;
+  padding: 8px 12px;
+  margin: 0;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  max-width: 420px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.ob-install-diag li {
+  display: grid;
+  grid-template-columns: 16px auto 1fr;
+  align-items: baseline;
+  column-gap: 8px;
+}
+.ob-install-diag-icon {
+  font-weight: 700;
+  font-size: 14px;
+  text-align: center;
+}
+.ob-install-diag-ok .ob-install-diag-icon {
+  color: #4ade80; /* green-400 */
+}
+.ob-install-diag-missing .ob-install-diag-icon {
+  color: #f87171; /* red-400 */
+}
+.ob-install-diag-label {
+  color: var(--text, #e5e7eb);
+}
+.ob-install-diag-hint {
+  grid-column: 3 / 4;
+  color: var(--text-muted, #9ca3af);
+  font-size: 12px;
+}
+
 /* ── Dictation test (step 5) ────────────────────────────────────────────── */
 
 .ob-dictation-test {

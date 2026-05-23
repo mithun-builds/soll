@@ -11,9 +11,17 @@ interface OnboardingStatus {
   model_download_pct: number | null;
   mic_permission: "granted" | "denied" | "unknown";
   accessibility: boolean;
+  /** False when the running binary's codesign identifier isn't `com.soll.app`
+   *  (e.g. an un-re-signed local `pnpm tauri build` produces a hash-based
+   *  identifier). When false AND accessibility is pending, the user's
+   *  System Settings grant can't apply — we surface a "Reset & re-grant"
+   *  hint instead of looping on the generic restart message. */
+  signing_identifier_ok: boolean;
   ollama_running: boolean;
   ollama_active_model_pulled: boolean;
   ollama_installed: boolean;
+  ollama_app_installed: boolean;
+  ollama_cli_installed: boolean;
   has_dictated: boolean;
   has_skills: boolean;
   dismissed: boolean;
@@ -174,6 +182,9 @@ interface OllamaModelInfo {
   size: string;
   is_active: boolean;
   is_pulled: boolean;
+  /** Streaming pull progress 0–100, or null when no pull is active for
+   *  this model. Populated by the streaming Ollama pull task in Rust. */
+  pull_pct: number | null;
 }
 
 function OllamaModelPicker({ models, ollamaRunning, pullingTag, onPullStart }: {
@@ -203,9 +214,8 @@ function OllamaModelPicker({ models, ollamaRunning, pullingTag, onPullStart }: {
         const isPulling = pullingTag === m.tag;
         const on = (m.is_active && m.is_pulled) || isPulling;
         const disabled = !ollamaRunning || (pullingTag !== null && !isPulling);
-        const recommended = m.tag === "llama3.2:3b";
         const statusLabel = isPulling
-          ? "Pulling…"
+          ? (m.pull_pct != null ? `Pulling… ${m.pull_pct}%` : "Pulling…")
           : m.is_pulled
           ? (m.is_active ? null : "Downloaded")
           : "Not downloaded";
@@ -220,9 +230,6 @@ function OllamaModelPicker({ models, ollamaRunning, pullingTag, onPullStart }: {
             <div className="ob-model-card-info">
               <div className="ob-model-card-name">{m.display_name}</div>
               <div className="ob-model-card-size">{m.size} · {m.author}</div>
-              {recommended && (
-                <div className="ob-model-card-rec">★ Recommended</div>
-              )}
               {statusLabel && (
                 <div className="ob-model-card-pulled">{statusLabel}</div>
               )}
@@ -290,24 +297,104 @@ function ActionButton({ onClick, danger, children }: {
   );
 }
 
+/// Brief always-visible explainer of what Ollama is and why this step
+/// exists. Shown above the install-diagnostics checklist on Step 4. The
+/// user shouldn't have to click anything to understand the concept.
+function OllamaExplainer() {
+  return (
+    <p className="ob-ollama-explainer">
+      <strong>Ollama</strong> is a small server that runs a local LLM on
+      your Mac. Soll talks to it over <code>localhost:11434</code> to clean
+      up transcripts (remove "um", fix punctuation) and power voice-triggered
+      Skills. Everything stays on-device — no cloud, no account.
+    </p>
+  );
+}
+
 function OllamaInstructions() {
   const [open, setOpen] = useState(false);
   return (
     <div className="ob-ollama-wrap">
       <button type="button" className="ob-ollama-toggle" onClick={() => setOpen(o => !o)}>
-        {open ? "▾ Hide install instructions" : "▸ How to install Ollama"}
+        {open ? "▾ Hide install instructions" : "▸ How do I install Ollama?"}
       </button>
       {open && (
         <div className="ob-ollama-instructions">
-          <p className="subtle">1. Install via Homebrew:</p>
+          <p className="subtle">
+            <strong>Two install shapes — pick one:</strong>
+          </p>
+          <p className="subtle">
+            <strong>A. App bundle (recommended for most people).</strong>{" "}
+            Installs an Ollama menu-bar app that auto-starts on login. Soll's
+            "Open Ollama" button can launch it for you.
+          </p>
+          <code className="ob-code-block">brew install --cask ollama</code>
+          <p className="subtle" style={{ marginTop: 10 }}>
+            <strong>B. CLI only (smaller, scriptable).</strong>{" "}
+            No menu-bar app, no login item — just the <code>ollama</code>{" "}
+            command. Soll's "Open Ollama" button runs <code>ollama serve</code>{" "}
+            in the background.
+          </p>
           <code className="ob-code-block">brew install ollama</code>
-          <p className="subtle">2. Start the server:</p>
-          <code className="ob-code-block">ollama serve</code>
-          <p className="subtle">3. Pull a model:</p>
-          <code className="ob-code-block">ollama pull llama3.2:3b</code>
+          <p className="subtle" style={{ marginTop: 10 }}>
+            Either install also works if you grab the DMG from{" "}
+            <code>ollama.com</code> instead of Homebrew.
+          </p>
+          <p className="subtle" style={{ marginTop: 10 }}>
+            After installing, click <strong>Open Ollama</strong> above — Soll
+            detects the running server within 2 seconds and lets you pick a
+            model below. The first pull (1.5–5 GB depending on model) runs
+            in the background.
+          </p>
         </div>
       )}
     </div>
+  );
+}
+
+/// Visual checklist showing the user exactly which Ollama pieces are
+/// installed and which are missing. Surfaced on Step 4 when Ollama isn't
+/// running, so the user can see at a glance whether they need to install
+/// anything before "Open Ollama" will help.
+///
+/// Three independent signals:
+///   • `.app` bundle at /Applications/Ollama.app — the cask install
+///   • CLI at /opt/homebrew/bin/ollama (or /usr/local/) — the formula install
+///   • Server responding on port 11434 — the daemon is up
+function OllamaInstallDiagnostics({ status }: { status: OnboardingStatus }) {
+  const rows: { ok: boolean; label: string; hint?: string }[] = [
+    {
+      ok: status.ollama_app_installed,
+      label: "Ollama.app installed",
+      hint: status.ollama_app_installed
+        ? undefined
+        : "Run: brew install --cask ollama",
+    },
+    {
+      ok: status.ollama_cli_installed,
+      label: "Ollama CLI installed",
+      hint: status.ollama_cli_installed
+        ? undefined
+        : "Run: brew install ollama",
+    },
+    {
+      ok: status.ollama_running,
+      label: "Server running on port 11434",
+      hint: status.ollama_running
+        ? undefined
+        : "Click 'Open Ollama' below — Soll will launch it for you.",
+    },
+  ];
+  return (
+    <ul className="ob-install-diag">
+      {rows.map((r, i) => (
+        <li key={i} className={r.ok ? "ob-install-diag-ok" : "ob-install-diag-missing"}>
+          <span className="ob-install-diag-icon">{r.ok ? "✓" : "✗"}</span>
+          <span className="ob-install-diag-label">{r.label}</span>
+          {r.hint && <span className="ob-install-diag-hint">{r.hint}</span>}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -421,9 +508,25 @@ function deriveSteps(s: OnboardingStatus, opts: DeriveOpts): StepDef[] {
   };
 
   // ── Step 3: Accessibility ────────────────────────────────────────────────
-  // AXIsProcessTrusted caches its result for the lifetime of the process —
-  // a freshly granted permission won't reflect until Soll restarts. Surface
-  // a Restart action whenever this step is still pending.
+  // Two pending sub-cases, surfaced differently:
+  //
+  //   A) signing_identifier_ok = true (the common case): the user just
+  //      hasn't granted yet, or granted but the running process needs to
+  //      restart — AXIsProcessTrusted caches its result for the lifetime
+  //      of the process. We show the standard "Restart Soll to apply"
+  //      remedy.
+  //
+  //   B) signing_identifier_ok = false: the running binary's codesign
+  //      identifier doesn't match `com.soll.app`. This means *any* TCC
+  //      grant the user makes against the existing "Soll" System Settings
+  //      entry won't apply, because TCC keys grants by signing identifier
+  //      and the running process has a different one (typically
+  //      `soll-<hash>` from a linker-signed local build). Restarting alone
+  //      can't fix this — we need to wipe the stale grant via tccutil so
+  //      macOS will create a fresh entry tied to the new signature on the
+  //      next access attempt. Show a dedicated "Reset & re-grant" path
+  //      instead of looping the user on "Restart Soll".
+  const identityMismatch = !s.signing_identifier_ok;
   const axStep: StepDef = {
     id: "accessibility",
     iconNode: ICONS.accessibility,
@@ -440,20 +543,54 @@ function deriveSteps(s: OnboardingStatus, opts: DeriveOpts): StepDef[] {
       ? "macOS only allows revoking via System Settings — toggling off opens the right pane."
       : undefined,
     extra: axState !== "done" ? (
-      <div className="ob-step-extra-stack">
-        <p className="ob-toggle-note">
-          Already granted in System Settings? macOS caches Accessibility status until restart.
-        </p>
-        <ActionButton onClick={() => invoke("restart_app")}>
-          Restart Soll to apply
-        </ActionButton>
-      </div>
+      identityMismatch ? (
+        <div className="ob-step-extra-stack">
+          <p className="ob-toggle-note">
+            <strong>Signing-identity mismatch detected.</strong> This build
+            isn't signed as <code>com.soll.app</code>, so any toggle you flip
+            in System Settings is recorded against a different identity and
+            doesn't reach this process. Common cause: a local{" "}
+            <code>pnpm tauri build</code> without the re-sign step. Click
+            below to clear the stale grant and re-prompt cleanly — then
+            toggle Soll on in System Settings and restart.
+          </p>
+          <div className="ob-step-actions-row">
+            <ActionButton onClick={async () => {
+              await invoke("reset_accessibility_grant");
+              await invoke("open_privacy_settings", { section: "Privacy_Accessibility" });
+            }}>
+              Reset &amp; re-grant
+            </ActionButton>
+            <ActionButton onClick={() => invoke("restart_app")}>
+              Restart Soll to apply
+            </ActionButton>
+          </div>
+        </div>
+      ) : (
+        <div className="ob-step-extra-stack">
+          <p className="ob-toggle-note">
+            Already granted in System Settings? macOS caches Accessibility status until restart.
+          </p>
+          <ActionButton onClick={() => invoke("restart_app")}>
+            Restart Soll to apply
+          </ActionButton>
+        </div>
+      )
     ) : undefined,
   };
 
-  // ── Step 4: Ollama (mandatory, model picker) ─────────────────────────────
-  // Picker handles all the pull/delete logic; the step itself shows no
-  // standalone toggle, mirroring step 1.
+  // ── Step 4: Ollama — AI cleanup (RECOMMENDED, but optional) ──────────────
+  //
+  // Recommended because it unlocks filler-word removal + Skills. Optional
+  // because dictation works fine without it — raw Whisper transcripts go
+  // straight to the cursor. The Next button is always enabled so users
+  // can move past this step without a configured model; the copy below
+  // makes that explicit.
+  //
+  // When Ollama isn't running we surface an install-diagnostics checklist
+  // (.app present? CLI present? Server up?) instead of the older single
+  // "installed/not installed" line — users were confused about which
+  // install shape they had, and what to do next.
   const pullingOllamaTag = opts.pullingOllamaTag;
   const pullingOllamaModel = pullingOllamaTag
     ? opts.ollamaModels.find(m => m.tag === pullingOllamaTag)
@@ -461,19 +598,19 @@ function deriveSteps(s: OnboardingStatus, opts: DeriveOpts): StepDef[] {
   const ollamaStep: StepDef = {
     id: "ollama",
     iconNode: ICONS.ollama,
-    title: "Ollama — AI cleanup",
+    title: "Ollama — AI cleanup (optional)",
     state: ollamaState,
     desc: !s.ollama_running
-      ? s.ollama_installed
-        ? "Ollama is installed but not running. Click below to launch it — Soll detects it within 2 seconds."
-        : "Ollama isn't installed. Follow the instructions below, then return — Soll detects it within 2 seconds."
+      ? "Recommended: enables filler-word removal and voice-triggered Skills. Soll dictates fine without it — you can skip this step or come back to it later."
       : pullingOllamaModel
-      ? `Pulling ${pullingOllamaModel.display_name} (${pullingOllamaModel.size})… first pull can take 5–10 minutes. Safe to leave this window open.`
+      ? `Pulling ${pullingOllamaModel.display_name} (${pullingOllamaModel.size})${pullingOllamaModel.pull_pct != null ? ` — ${pullingOllamaModel.pull_pct}%` : "…"}. First pull can take 5–10 minutes. Safe to leave this window open.`
       : activeOllamaModel?.is_pulled
       ? `${activeOllamaModel.display_name} is your default. You can switch models anytime from Settings.`
       : "Pick a default model — toggling one selects it (and downloads it if not already on disk). You can change this later in Settings.",
     extra: !s.ollama_running ? (
       <div className="ob-step-extra-stack">
+        <OllamaExplainer />
+        <OllamaInstallDiagnostics status={s} />
         {s.ollama_installed ? (
           <ActionButton onClick={() => invoke("open_ollama")}>
             Open Ollama
@@ -481,6 +618,10 @@ function deriveSteps(s: OnboardingStatus, opts: DeriveOpts): StepDef[] {
         ) : (
           <OllamaInstructions />
         )}
+        <p className="ob-toggle-note">
+          Or skip this step — Soll dictates fine without AI cleanup.
+          You can configure Ollama later in Settings → Models.
+        </p>
       </div>
     ) : (
       <div className="ob-step-extra-stack">
