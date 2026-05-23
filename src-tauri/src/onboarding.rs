@@ -8,13 +8,19 @@
 //! no longer opens automatically on subsequent launches.
 
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
 use crate::settings::{KEY_HAS_DICTATED, KEY_ONBOARDING_DISMISSED};
 use crate::state::AppState;
+
+/// Bundle ID Soll ships with — also the codesign identifier when the binary
+/// is properly re-signed via `codesign --force --sign -`. Used to detect
+/// the "linker-signed local build" case where the identifier ends up as a
+/// hash like `soll-dc34b220ba651dd5` and TCC grants don't stick.
+const EXPECTED_SIGNING_IDENTIFIER: &str = "com.soll.app";
 
 // ── public types ───────────────────────────────────────────────────────────
 
@@ -37,6 +43,13 @@ pub struct OnboardingStatus {
     pub mic_permission: PermState,
     // Step 3 — Accessibility
     pub accessibility: bool,
+    /// False when the running binary's codesign identifier doesn't match
+    /// `com.soll.app`. This happens with locally-built dev binaries that
+    /// weren't re-signed (`pnpm tauri build` alone leaves a linker-signed
+    /// binary with a hash identifier). When this is false AND accessibility
+    /// is false, the UI shows a specific hint explaining that the existing
+    /// System Settings grant can't apply, instead of looping on "Pending".
+    pub signing_identifier_ok: bool,
     // Step 4 — Ollama
     pub ollama_running: bool,
     /// True when Ollama is running AND the currently active model has been pulled.
@@ -45,6 +58,13 @@ pub struct OnboardingStatus {
     /// whether it's currently running. Lets the wizard show "Open Ollama"
     /// instead of the install instructions when the user has it but quit it.
     pub ollama_installed: bool,
+    /// True when the .app bundle is installed at `/Applications/Ollama.app`.
+    /// Surfaced as an explicit checkmark on Step 4 so the user can see at a
+    /// glance which install shape they have (or both, or neither).
+    pub ollama_app_installed: bool,
+    /// True when the Ollama CLI is on disk (`brew install ollama`). Surfaced
+    /// alongside `ollama_app_installed` for the install-status checklist.
+    pub ollama_cli_installed: bool,
     // Step 5 — First dictation
     pub has_dictated: bool,
     // Step 6 — Skills (optional)
@@ -80,8 +100,11 @@ pub async fn onboarding_status(
 
     let mic_permission = check_mic_permission();
     let accessibility = check_accessibility();
+    let signing_identifier_ok = current_signing_identifier() == Some(EXPECTED_SIGNING_IDENTIFIER);
     let ollama_running = check_ollama_running().await;
-    let ollama_installed = check_ollama_installed();
+    let ollama_app_installed = check_ollama_app_installed();
+    let ollama_cli_installed = check_ollama_cli_installed();
+    let ollama_installed = ollama_app_installed || ollama_cli_installed;
     let ollama_active_model_pulled = if ollama_running {
         let active = state.ollama.active_model();
         state.ollama.list_pulled_tags().await.contains(&active)
@@ -100,13 +123,67 @@ pub async fn onboarding_status(
         model_download_pct,
         mic_permission,
         accessibility,
+        signing_identifier_ok,
         ollama_running,
         ollama_active_model_pulled,
         ollama_installed,
+        ollama_app_installed,
+        ollama_cli_installed,
         has_dictated,
         has_skills,
         dismissed,
     })
+}
+
+/// Return the codesign identifier of the currently running binary, or
+/// `None` if it can't be determined. Cached via `OnceLock` because this
+/// is polled every 2 seconds by the onboarding window and the answer
+/// can't change without a process restart anyway.
+///
+/// `codesign -dv` writes display info to stderr including a line
+/// `Identifier=...`. `--identifier` is a **signing** flag and is rejected
+/// in display mode (it prints the usage banner and exits non-zero — an
+/// earlier version of this function used that combination and ended up
+/// always returning the usage banner as the "identifier", which made the
+/// onboarding's mismatch warning fire for every user).
+fn current_signing_identifier() -> Option<&'static str> {
+    static IDENT: OnceLock<Option<String>> = OnceLock::new();
+    IDENT
+        .get_or_init(|| {
+            let exe = std::env::current_exe().ok()?;
+            let out = std::process::Command::new("/usr/bin/codesign")
+                .args(["-dv"])
+                .arg(&exe)
+                .output()
+                .ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            String::from_utf8_lossy(&out.stderr)
+                .lines()
+                .find_map(|line| line.strip_prefix("Identifier=").map(str::to_owned))
+        })
+        .as_deref()
+}
+
+/// Wipe the Accessibility TCC grant for `com.soll.app`. The next call to
+/// the macOS accessibility APIs will re-prompt, giving the user a fresh
+/// path to re-grant against the current binary's signature.
+///
+/// Used by the onboarding window's "Reset & re-grant" button — surfaced
+/// when Accessibility is pending despite the user having toggled the
+/// System Settings switch on, typically because of a code-signing
+/// identifier mismatch (e.g. a stale grant from a previous local build).
+#[tauri::command]
+pub fn reset_accessibility_grant() -> Result<(), String> {
+    let status = std::process::Command::new("/usr/bin/tccutil")
+        .args(["reset", "Accessibility", "com.soll.app"])
+        .status()
+        .map_err(|e| format!("tccutil failed to launch: {e}"))?;
+    if !status.success() {
+        return Err(format!("tccutil exited with {status}"));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -262,12 +339,18 @@ pub(crate) fn check_mic_permission() -> PermState {
     PermState::Granted
 }
 
-/// True when an Ollama installation exists on disk, regardless of whether
-/// the daemon is currently up. Detects the .app bundle (DMG/Cask install)
-/// and the CLI (Homebrew install on Apple Silicon or Intel).
-pub(crate) fn check_ollama_installed() -> bool {
+/// True when the Ollama macOS .app bundle is on disk (DMG drag-install or
+/// `brew install --cask ollama`). The .app, when launched, starts a
+/// background menu-bar process that serves `/api` on port 11434.
+pub(crate) fn check_ollama_app_installed() -> bool {
+    std::path::Path::new("/Applications/Ollama.app").exists()
+}
+
+/// True when the Ollama CLI binary is on disk (`brew install ollama` on
+/// Apple Silicon or Intel). The CLI alone doesn't start a server — the
+/// user (or our `open_ollama` command) has to run `ollama serve`.
+pub(crate) fn check_ollama_cli_installed() -> bool {
     const CANDIDATES: &[&str] = &[
-        "/Applications/Ollama.app",
         "/opt/homebrew/bin/ollama",
         "/usr/local/bin/ollama",
     ];
@@ -275,6 +358,13 @@ pub(crate) fn check_ollama_installed() -> bool {
         .iter()
         .any(|p| std::path::Path::new(p).exists())
 }
+
+// The old `check_ollama_installed()` wrapper used to fold app+CLI detection
+// into one boolean. It's gone — callers now use the two specific helpers
+// directly and compute `ollama_installed = app || cli` inline in
+// `onboarding_status`. Keeping the wrapper around triggered a dead-code
+// warning and obscured which install shape any given call actually cares
+// about (the .app and the CLI need different launch paths).
 
 /// Launch Ollama so its daemon starts listening on 11434.
 ///

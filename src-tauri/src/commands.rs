@@ -359,6 +359,9 @@ pub struct OllamaModelInfo {
     pub is_active: bool,
     /// True when the model is already pulled locally in Ollama.
     pub is_pulled: bool,
+    /// Live pull progress 0–100 for this model. `None` when no pull is
+    /// running, or when the pull is running but for a different model.
+    pub pull_pct: Option<u8>,
 }
 
 /// List all known AI models with their active and pulled state.
@@ -368,15 +371,23 @@ pub async fn ollama_models_list(
 ) -> Result<Vec<OllamaModelInfo>, String> {
     let active = state.ollama.active_model();
     let pulled = state.ollama.list_pulled_tags().await;
+    let pull = state.ollama.pull_status();
     Ok(OllamaModel::ALL
         .iter()
-        .map(|m| OllamaModelInfo {
-            tag: m.tag().to_string(),
-            display_name: m.display_name().to_string(),
-            author: m.author().to_string(),
-            size: m.size_label().to_string(),
-            is_active: m.tag() == active,
-            is_pulled: pulled.contains(m.tag()),
+        .map(|m| {
+            let pull_pct = pull
+                .as_ref()
+                .filter(|p| p.tag == m.tag())
+                .map(|p| p.percent);
+            OllamaModelInfo {
+                tag: m.tag().to_string(),
+                display_name: m.display_name().to_string(),
+                author: m.author().to_string(),
+                size: m.size_label().to_string(),
+                is_active: m.tag() == active,
+                is_pulled: pulled.contains(m.tag()),
+                pull_pct,
+            }
         })
         .collect())
 }
@@ -392,41 +403,106 @@ pub fn ollama_model_set(tag: String, state: State<'_, Arc<AppState>>) -> Result<
         .map_err(|e| e.to_string())
 }
 
-/// Kick off a pull of the currently active Ollama model. Returns instantly —
-/// the actual pull runs in a background task and can take 5–10+ minutes for a
-/// 2 GB model. The frontend should switch to the "pulling" state immediately
-/// and rely on `onboarding_status.ollama_active_model_pulled` (polled every
-/// 2 s) to detect completion. Awaiting the HTTP response would block the
-/// IPC call for the entire duration, freezing the wizard.
+/// Kick off a streaming pull of the currently active Ollama model. Returns
+/// instantly — the actual pull runs in a background task and can take 5–10+
+/// minutes for a 2 GB model. The task reads Ollama's chunked JSON stream
+/// (`/api/pull` with `stream: true`) and pushes live progress into
+/// `state.ollama.pull_status()`, which `ollama_models_list` surfaces to
+/// the frontend on each 2-second poll as a percent on the model card.
+///
+/// Awaiting the full HTTP response would block the IPC call for the entire
+/// pull duration, freezing the wizard. We hand off to a background task
+/// instead.
+///
+/// Uses `tauri::async_runtime::spawn` (not `tokio::spawn`) because this is a
+/// **sync** `#[tauri::command]` — Tauri runs sync commands on its blocking
+/// thread pool, which has no Tokio runtime in context. Calling `tokio::spawn`
+/// from there panics (`there is no reactor running`), and with the release
+/// profile's `panic = "abort"`, that panic killed the whole app the moment
+/// the user clicked any not-yet-pulled model in the setup picker. See
+/// crash report `soll-2026-05-22-194922.ips` for the SIGABRT trace.
 #[tauri::command]
 pub fn ollama_pull_active(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let tag = state.ollama.active_model();
-    tokio::spawn(async move {
-        let client = match reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(60 * 60))
-            .build()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                log::error!("ollama_pull_active: build client failed: {e}");
-                return;
-            }
-        };
-        let body = serde_json::json!({ "name": tag, "stream": false });
-        match client
-            .post("http://127.0.0.1:11434/api/pull")
-            .json(&body)
-            .send()
-            .await
-        {
-            Ok(r) if r.status().is_success() => {
-                log::info!("ollama pull {tag} complete");
-            }
-            Ok(r) => log::error!("ollama pull {tag} returned {}", r.status()),
-            Err(e) => log::error!("ollama pull {tag} failed: {e}"),
+    let ollama = state.ollama.clone();
+    // Seed progress at 0 immediately so the UI flips to "Pulling… 0%"
+    // on the very next poll, instead of waiting for the first chunk.
+    ollama.set_pull_progress(tag.clone(), 0);
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = stream_pull(&ollama, &tag).await {
+            log::error!("ollama pull {tag} failed: {e}");
         }
+        ollama.clear_pull();
     });
     Ok(())
+}
+
+/// Drive a single streaming `/api/pull`, updating `ollama.pull_status()`
+/// as each `downloading` chunk arrives. Returns `Ok(())` on a clean
+/// `status: "success"` line, or `Err` on transport / HTTP / parse errors.
+async fn stream_pull(ollama: &crate::cleanup::OllamaClient, tag: &str) -> Result<(), String> {
+    // 60-minute ceiling lets the slowest Apple Silicon / slowest network
+    // combination still finish a 4.7 GB Qwen pull without timing out.
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60 * 60))
+        .build()
+        .map_err(|e| format!("build pull client: {e}"))?;
+
+    let body = serde_json::json!({ "name": tag, "stream": true });
+    let mut response = client
+        .post("http://127.0.0.1:11434/api/pull")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("pull request: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!("pull returned {}", response.status()));
+    }
+
+    // Ollama emits one JSON object per line, separated by `\n`. We buffer
+    // partial chunks across reqwest reads because a single TCP chunk
+    // can contain multiple lines or split a line in half.
+    let mut buf = String::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| format!("read chunk: {e}"))?
+    {
+        buf.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(nl) = buf.find('\n') {
+            let line: String = buf.drain(..=nl).collect();
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Some(pct) = parse_pull_progress(line) {
+                ollama.set_pull_progress(tag.to_string(), pct);
+            }
+            // The terminal "success" line is just informational — the
+            // task completes when chunk() returns None, which happens
+            // naturally after Ollama closes the stream.
+        }
+    }
+    log::info!("ollama pull {tag} complete");
+    Ok(())
+}
+
+/// Parse one streaming line from `/api/pull` and return the percent
+/// complete for the currently-downloading layer, or `None` if the line
+/// doesn't carry progress info (e.g. `status: "pulling manifest"` lines).
+fn parse_pull_progress(line: &str) -> Option<u8> {
+    #[derive(serde::Deserialize)]
+    struct Event {
+        completed: Option<u64>,
+        total: Option<u64>,
+    }
+    let ev: Event = serde_json::from_str(line).ok()?;
+    let (completed, total) = (ev.completed?, ev.total?);
+    if total == 0 {
+        return Some(0);
+    }
+    Some(((completed.saturating_mul(100)) / total).min(100) as u8)
 }
 
 /// Delete the currently active Ollama model from local Ollama storage.

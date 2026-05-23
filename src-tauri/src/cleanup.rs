@@ -16,6 +16,7 @@ const OLLAMA_TAGS: &str = "http://127.0.0.1:11434/api/tags";
 // |----------------|-----------------|---------|--------|------------------------|
 // | Llama3_2_3b    | llama3.2:3b     | Meta    | 2.0 GB | Fast cleanup on any Mac|
 // | Qwen2_5_7b     | qwen2.5:7b      | Alibaba | 4.7 GB | Skills, rewrites, tasks|
+// | Gemma2_2b      | gemma2:2b       | Google  | 1.6 GB | Lightest; older Macs   |
 //
 // `DEFAULT` points at the model that should be active. Switch to `Qwen2_5_7b`
 // once you have pulled it (`ollama pull qwen2.5:7b`).
@@ -29,14 +30,21 @@ pub enum OllamaModel {
     /// Best-in-class instruction following at this size. Recommended for skills.
     /// Source: <https://github.com/QwenLM/Qwen2.5> · Apache 2.0
     Qwen2_5_7b,
+    /// Google Gemma 2 — 2 billion parameters.
+    /// Smallest of the three; best fit when disk space or RAM is tight
+    /// (older Macs, low SSD). Fast cleanup; weaker at multi-step skills
+    /// than Llama 3.2 or Qwen 2.5.
+    /// Source: <https://ai.google.dev/gemma> · Gemma Terms of Use
+    Gemma2_2b,
 }
 
 impl OllamaModel {
     /// The model to use until the user explicitly changes it.
     pub const DEFAULT: Self = Self::Llama3_2_3b;
 
-    /// All selectable models, in display order.
-    pub const ALL: &'static [Self] = &[Self::Llama3_2_3b, Self::Qwen2_5_7b];
+    /// All selectable models, in display order (smallest → largest within
+    /// the same role; cleanup-first models first).
+    pub const ALL: &'static [Self] = &[Self::Llama3_2_3b, Self::Qwen2_5_7b, Self::Gemma2_2b];
 
     /// Resolve a tag string back to a variant, returns `None` for unknown tags.
     pub fn from_tag(tag: &str) -> Option<Self> {
@@ -48,6 +56,7 @@ impl OllamaModel {
         match self {
             Self::Llama3_2_3b => "llama3.2:3b",
             Self::Qwen2_5_7b  => "qwen2.5:7b",
+            Self::Gemma2_2b   => "gemma2:2b",
         }
     }
 
@@ -56,6 +65,7 @@ impl OllamaModel {
         match self {
             Self::Llama3_2_3b => "Llama 3.2 3B",
             Self::Qwen2_5_7b  => "Qwen 2.5 7B",
+            Self::Gemma2_2b   => "Gemma 2 2B",
         }
     }
 
@@ -64,6 +74,7 @@ impl OllamaModel {
         match self {
             Self::Llama3_2_3b => "Meta",
             Self::Qwen2_5_7b  => "Alibaba / Qwen",
+            Self::Gemma2_2b   => "Google",
         }
     }
 
@@ -72,6 +83,7 @@ impl OllamaModel {
         match self {
             Self::Llama3_2_3b => "2.0 GB",
             Self::Qwen2_5_7b  => "4.7 GB",
+            Self::Gemma2_2b   => "1.6 GB",
         }
     }
 }
@@ -171,6 +183,27 @@ pub enum CleanupState {
     Unavailable,
 }
 
+/// Snapshot of an in-flight `ollama pull` for one model.
+///
+/// Populated by the streaming pull task in `commands.rs::ollama_pull_active`
+/// from Ollama's `/api/pull` chunked JSON stream. Consumed by
+/// `ollama_models_list` to surface live progress on the model picker.
+#[derive(Clone, Debug, Serialize)]
+pub struct PullStatus {
+    pub tag: String,
+    /// 0–100 percent. Computed from the latest `completed`/`total` pair
+    /// observed in the stream — Ollama emits these multiple times as
+    /// different layers download, so this isn't strictly monotonic.
+    pub percent: u8,
+}
+
+/// `Clone` is cheap — `reqwest::Client` is already internally `Arc`-based,
+/// and our state fields are `Arc<RwLock<…>>`. Cloning bumps three atomic
+/// reference counts and copies a couple of pointers; nothing deep. We
+/// derive it so command handlers can hand a clone to a `tauri::async_runtime::spawn`
+/// task and keep using the original on the calling thread (e.g. for the
+/// streaming pull in `commands.rs::ollama_pull_active`).
+#[derive(Clone)]
 pub struct OllamaClient {
     live: reqwest::Client,
     warm: reqwest::Client,
@@ -178,6 +211,9 @@ pub struct OllamaClient {
     /// The Ollama model tag to use, e.g. `"llama3.2:3b"`. Swappable at runtime
     /// without restarting. Protected by an RwLock for lock-free reads.
     model: Arc<RwLock<String>>,
+    /// `Some` while a pull is in flight; `None` otherwise. Updated by the
+    /// streaming pull task as it consumes `/api/pull` chunks.
+    pull: Arc<RwLock<Option<PullStatus>>>,
 }
 
 impl OllamaClient {
@@ -195,6 +231,7 @@ impl OllamaClient {
             warm,
             state: Arc::new(RwLock::new(CleanupState::Unknown)),
             model: Arc::new(RwLock::new(OllamaModel::DEFAULT.tag().to_string())),
+            pull: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -211,6 +248,24 @@ impl OllamaClient {
     /// trigger a re-warmup — Ollama loads the new model on its first use.
     pub fn set_model(&self, tag: &str) {
         *self.model.write() = tag.to_string();
+    }
+
+    /// Snapshot of any in-flight pull, or `None` if no pull is running.
+    pub fn pull_status(&self) -> Option<PullStatus> {
+        self.pull.read().clone()
+    }
+
+    /// Called by the streaming pull task in `commands.rs` as it consumes
+    /// `/api/pull` chunks. `percent` is 0–100. Setting to 100 doesn't
+    /// auto-clear — call `clear_pull` once the success line is observed
+    /// so the UI sees the final 100% before the indicator disappears.
+    pub(crate) fn set_pull_progress(&self, tag: String, percent: u8) {
+        *self.pull.write() = Some(PullStatus { tag, percent });
+    }
+
+    /// Mark the pull as no longer in flight (success or terminal error).
+    pub(crate) fn clear_pull(&self) {
+        *self.pull.write() = None;
     }
 
     /// Query Ollama's `/api/tags` and return the set of model tags that are

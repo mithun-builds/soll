@@ -103,6 +103,7 @@ pub fn run() {
             onboarding::onboarding_dismiss,
             onboarding::request_mic_permission,
             onboarding::request_accessibility_permission,
+            onboarding::reset_accessibility_grant,
             onboarding::open_ollama,
         ])
         .plugin(
