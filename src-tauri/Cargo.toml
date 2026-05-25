@@ -1,6 +1,6 @@
 [package]
 name = "soll"
-version = "0.4.2"
+version = "0.4.3"
 description = "Open-source local-first voice dictation"
 authors = ["Soll contributors"]
 edition = "2021"
