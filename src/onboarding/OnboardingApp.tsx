@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import ollamaLogo from "../assets/ollama.png";
 import "./onboarding.css";
+import { OllamaInstallPills, OllamaInstallVerifyTipsContent } from "../components/OllamaInstallStatus";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -29,23 +30,10 @@ interface OnboardingStatus {
 
 type StepState = "done" | "in_progress" | "denied" | "pending";
 
-interface StepDef {
-  id: string;
-  iconNode: React.ReactNode;
-  title: string;
-  optional?: boolean;
-  /// Force the toggle to render even when there are no handlers (visual indicator only).
-  alwaysShowToggle?: boolean;
-  state: StepState;
-  desc: string;
-  onToggleOn?: () => void | Promise<void>;
-  onToggleOff?: () => void | Promise<void>;
-  /// Small italic note shown only while the toggle is ON. Used for the macOS
-  /// "revoke must be done in System Settings" caveat.
-  onNote?: string;
-  /// Extra UI below the toggle — install instructions, delete buttons, etc.
-  extra?: React.ReactNode;
-}
+// (Old `StepDef` interface removed in the conversational redesign — each
+// step now renders its own JSX directly via the Step1Whisper / Step2Mic / ...
+// functions in this file. `StepMeta` further down captures just the
+// state-for-progress info that OnboardingApp needs.)
 
 // ── Icons ──────────────────────────────────────────────────────────────────
 
@@ -86,25 +74,11 @@ const ICONS: Record<string, React.ReactNode> = {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-function cssState(state: StepState) {
-  return state === "in_progress" ? "in-progress" : state;
-}
+// (Helpers `cssState` and `StatusBadge` were removed in the conversational
+// redesign. The status pill is gone — "done" is signalled via the
+// success-tinted icon and the dot strip at the bottom of the wizard.)
 
 // ── Sub-components ─────────────────────────────────────────────────────────
-
-function StatusBadge({ state }: { state: StepState }) {
-  const label: Record<StepState, string> = {
-    done: "Done ✓",
-    in_progress: "In Progress…",
-    denied: "Access Denied",
-    pending: "Pending",
-  };
-  return (
-    <span className={`ob-badge ob-badge--${cssState(state)}`}>
-      {label[state]}
-    </span>
-  );
-}
 
 interface ModelInfo {
   id: string;
@@ -116,15 +90,63 @@ interface ModelInfo {
   is_recommended: boolean;
 }
 
-function ModelPicker({ models }: { models: ModelInfo[] }) {
+function ModelPicker({ models, downloadPct }: {
+  models: ModelInfo[];
+  /** Global download % from `onboarding_status` — applies to whichever
+   *  model has `is_downloading=true`. Captured into `pausedPctMap` on
+   *  pause so we can show "Paused at X%" after the backend's pct clears. */
+  downloadPct: number | null;
+}) {
+  // Optimistic UI state:
+  //
+  //   `pendingCancelId` — the user just clicked pause; backend hasn't
+  //     confirmed yet. Status shows "Pausing…" briefly.
+  //
+  //   `pausedPctMap` — last-seen percent for any model the user paused.
+  //     The backend zeroes its progress on cancel, but we want to show
+  //     "Paused at 42%". Snapshot at click time, clear when the model
+  //     becomes cached or starts downloading again.
+  const [pendingCancelId, setPendingCancelId] = useState<string | null>(null);
+  const [pausedPctMap, setPausedPctMap] = useState<Record<string, number>>({});
+
+  useEffect(() => {
+    if (pendingCancelId) {
+      const m = models.find(x => x.id === pendingCancelId);
+      if (!m || !m.is_downloading) setPendingCancelId(null);
+    }
+  }, [models, pendingCancelId]);
+
+  // Clear a model's paused-at memory once it's no longer in the
+  // "downloaded-partially, not currently downloading" state.
+  useEffect(() => {
+    setPausedPctMap(prev => {
+      const out: Record<string, number> = {};
+      for (const [id, pct] of Object.entries(prev)) {
+        const m = models.find(x => x.id === id);
+        if (m && !m.is_cached && !m.is_downloading) {
+          out[id] = pct;
+        }
+      }
+      return out;
+    });
+  }, [models]);
+
   // Multiple models can be cached. The toggle on a chip reflects "this is
   // the active speech model" — i.e. cached AND active. Click rules:
   //   • Already active+cached → no-op (use Delete button below to remove).
   //   • Cached but inactive → switch to it (no download).
   //   • Not cached → start download; becomes active when finished.
-  //   • Downloading → cancel.
+  //   • Downloading → pause (cancel + keep .part for later resume).
+  //   • Paused (.part exists, not downloading) → resume from where it
+  //     paused, courtesy of `ensure_model`'s Range-based resume.
   async function handleClick(m: ModelInfo) {
     if (m.is_downloading) {
+      // Snapshot the current % so we can show "Paused at X%" after
+      // the backend clears its progress counters.
+      if (downloadPct != null) {
+        setPausedPctMap(prev => ({ ...prev, [m.id]: downloadPct }));
+      }
+      setPendingCancelId(m.id);
       await invoke("model_cancel_download");
       return;
     }
@@ -139,16 +161,26 @@ function ModelPicker({ models }: { models: ModelInfo[] }) {
   }
 
   return (
-    <div className="ob-model-picker">
+    <div className="ob-model-picker ob-model-picker--compact">
       {models.map(m => {
-        const on = (m.is_cached && m.is_active) || m.is_downloading;
+        const isCancelling = pendingCancelId === m.id;
+        const pausedAt = pausedPctMap[m.id];
+        const isPaused = !m.is_downloading && !isCancelling && !m.is_cached && pausedAt != null;
+        const on = (m.is_cached && m.is_active) || (m.is_downloading && !isCancelling);
         // Disable only the chip that's already active+cached — clicking it
         // would be a no-op anyway. Every other chip stays clickable so the
-        // user can switch freely or download an additional one.
+        // user can switch freely, download an additional one, or pause a
+        // download.
         const disabled = m.is_cached && m.is_active;
+        // Compact status: ONLY show text when there's something
+        // worth saying. Cached + clickable doesn't need a "click to
+        // use" hint — the toggle visual already implies the action.
+        // The previous status line ("Cached · click to use" on three
+        // of four cards) was clutter that ate vertical space on Step 1.
         const status =
-          m.is_downloading ? "Downloading…"
-          : m.is_cached && !m.is_active ? "Cached · click to use"
+          isCancelling ? "Pausing…"
+          : m.is_downloading ? "Downloading…"
+          : isPaused ? `Paused at ${pausedAt}%`
           : !m.is_cached ? "Not downloaded"
           : null;
         return (
@@ -162,9 +194,6 @@ function ModelPicker({ models }: { models: ModelInfo[] }) {
             <div className="ob-model-card-info">
               <div className="ob-model-card-name">{m.label}</div>
               <div className="ob-model-card-size">{m.size}</div>
-              {m.is_recommended && (
-                <div className="ob-model-card-rec">★ Recommended</div>
-              )}
               {status && <div className="ob-model-card-pulled">{status}</div>}
             </div>
             <span className={`ob-model-card-toggle${on ? " ob-model-card-toggle--on" : ""}`} />
@@ -187,20 +216,82 @@ interface OllamaModelInfo {
   pull_pct: number | null;
 }
 
-function OllamaModelPicker({ models, ollamaRunning, pullingTag, onPullStart }: {
+function OllamaModelPicker({ models, ollamaRunning, pullingTag, onPullStart, onPullCancel }: {
   models: OllamaModelInfo[];
   ollamaRunning: boolean;
   pullingTag: string | null;
   onPullStart: (tag: string) => void;
+  onPullCancel: () => void;
 }) {
+  // Optimistic UI state:
+  //
+  //   `pendingCancelTag` — the user just clicked pause but the backend
+  //     hasn't confirmed yet. Status shows "Pausing…" briefly.
+  //
+  //   `pausedPctMap` — last-seen `pull_pct` for any tag the user paused.
+  //     Backend zeroes `pull_pct` on cancel, but we want to show "Paused
+  //     at 42%" not "Paused at –". So we snapshot the pct *before* sending
+  //     the cancel command. Cleared when the user resumes or the model
+  //     finishes pulling.
+  const [pendingCancelTag, setPendingCancelTag] = useState<string | null>(null);
+  const [pausedPctMap, setPausedPctMap] = useState<Record<string, number>>({});
+
+  // Clear pendingCancelTag once the backend confirms (pull_pct → null).
+  useEffect(() => {
+    if (!pendingCancelTag) return;
+    const m = models.find(x => x.tag === pendingCancelTag);
+    if (!m || m.pull_pct == null) setPendingCancelTag(null);
+  }, [models, pendingCancelTag]);
+
+  // Clear a model's paused-at memory when it's fully pulled (download
+  // completed) or when a new pull is already underway for it.
+  useEffect(() => {
+    setPausedPctMap(prev => {
+      const out: Record<string, number> = {};
+      for (const [tag, pct] of Object.entries(prev)) {
+        const m = models.find(x => x.tag === tag);
+        // Keep the paused-at marker as long as the model is neither
+        // already pulled nor actively pulling.
+        if (m && !m.is_pulled && m.pull_pct == null) {
+          out[tag] = pct;
+        }
+      }
+      return out;
+    });
+  }, [models]);
+
   // Radio-button semantics: exactly one chip is "on" at a time — the active
   // model that Soll uses for cleanup. `is_pulled` is shown as a separate
   // status badge so the user can see what's already on disk without it
-  // overriding the active selection.
+  // overriding the active selection. Clicking a *currently-pulling* chip
+  // pauses the pull (Ollama keeps the blob layers it already downloaded
+  // server-side, so the next click resumes from there).
   async function handleClickChip(m: OllamaModelInfo) {
     if (!ollamaRunning) return;
-    if (pullingTag) return; // wait for any in-flight pull to finish
+    // Block if a *different* model is pulling — Ollama doesn't parallelise
+    // pulls and our progress tracking only supports one in-flight tag.
+    // Don't block on `pullingTag === m.tag` since that just means *this*
+    // model is the one in flight (or was — could be the stale optimistic
+    // flag from before a pause).
+    if (pullingTag && pullingTag !== m.tag) return;
+    // Click on the actively-pulling chip → pause it. Snapshot the
+    // percentage NOW so we can show "Paused at X%" — once we send the
+    // cancel command, `pull_pct` clears on the backend and we lose it.
+    if (m.pull_pct != null) {
+      setPausedPctMap(prev => ({ ...prev, [m.tag]: m.pull_pct as number }));
+      setPendingCancelTag(m.tag);
+      // Tell the parent to drop its optimistic pullingTag flag too,
+      // otherwise the next click (to resume) might get mis-cleared by
+      // the parent's "pull_pct === null → clear" logic before the
+      // backend has time to bump pull_pct off zero.
+      onPullCancel();
+      await invoke("ollama_cancel_pull");
+      return;
+    }
     if (m.is_active && m.is_pulled) return; // already the default — no-op
+    // Either a fresh pull or a resume — both go through model_set then
+    // pull_active. Resume works because Ollama's server kept the partial
+    // blob layers from the earlier session.
     await invoke("ollama_model_set", { tag: m.tag });
     if (!m.is_pulled) {
       onPullStart(m.tag);
@@ -211,11 +302,18 @@ function OllamaModelPicker({ models, ollamaRunning, pullingTag, onPullStart }: {
   return (
     <div className="ob-model-picker">
       {models.map(m => {
-        const isPulling = pullingTag === m.tag;
-        const on = (m.is_active && m.is_pulled) || isPulling;
-        const disabled = !ollamaRunning || (pullingTag !== null && !isPulling);
-        const statusLabel = isPulling
-          ? (m.pull_pct != null ? `Pulling… ${m.pull_pct}%` : "Pulling…")
+        const isPulling = m.pull_pct != null || pullingTag === m.tag;
+        const isCancelling = pendingCancelTag === m.tag;
+        const pausedAt = pausedPctMap[m.tag];
+        const isPaused = !isPulling && !isCancelling && !m.is_pulled && pausedAt != null;
+        const on = (m.is_active && m.is_pulled) || (isPulling && !isCancelling);
+        const disabled = !ollamaRunning || (pullingTag !== null && pullingTag !== m.tag);
+        const statusLabel = isCancelling
+          ? "Pausing…"
+          : isPulling
+          ? (m.pull_pct != null ? `Pulling… ${m.pull_pct}% — click to pause` : "Pulling…")
+          : isPaused
+          ? `Paused at ${pausedAt}% — click to resume`
           : m.is_pulled
           ? (m.is_active ? null : "Downloaded")
           : "Not downloaded";
@@ -264,7 +362,7 @@ function DictationTest({ status }: { status: OnboardingStatus }) {
         value={value}
         onChange={(e) => setValue(e.target.value)}
         placeholder={placeholder}
-        rows={4}
+        rows={2}
         disabled={!ready}
       />
       {!ready ? (
@@ -281,15 +379,229 @@ function DictationTest({ status }: { status: OnboardingStatus }) {
   );
 }
 
-function ActionButton({ onClick, danger, children }: {
+// (Old `ActionButton` removed — replaced by PrimaryButton/SecondaryLink
+// in the conversational redesign.)
+
+// (The old `OllamaStatusPanel` and `Toggle` components were removed
+// during the conversational redesign. The Ollama-step copy is now
+// inlined into `Step4Ollama` so the case-by-case logic lives next to
+// the primary CTA it drives; the iOS-style toggle didn't carry over
+// because each step now has a single primary button instead.)
+
+// ── Step metadata (for nav + progress, no rendering) ───────────────────────
+
+interface StepMeta {
+  id: string;
+  /** Short label for dot tooltips + sidebar. Not shown on the step itself. */
+  shortTitle: string;
+  state: StepState;
+  /** True when the step doesn't block "All Done". Right now only Ollama. */
+  optional?: boolean;
+}
+
+function deriveStepMeta(
+  s: OnboardingStatus,
+  ollamaModels: OllamaModelInfo[],
+  pullingOllamaTag: string | null,
+): StepMeta[] {
+  const modelState: StepState = s.model_cached ? "done"
+    : s.model_downloading ? "in_progress" : "pending";
+  const micState: StepState = s.mic_permission === "granted" ? "done"
+    : s.mic_permission === "denied" ? "denied" : "pending";
+  const axState: StepState = s.accessibility ? "done" : "pending";
+  // Ollama is "done" only when the *active* model is pulled — having
+  // some other model on disk doesn't help if Llama is active and missing.
+  const activeOllamaModel = ollamaModels.find(m => m.is_active);
+  const ollamaState: StepState =
+    s.ollama_running && activeOllamaModel?.is_pulled ? "done"
+    : pullingOllamaTag ? "in_progress"
+    : "pending";
+  const dictState: StepState = s.has_dictated ? "done" : "pending";
+
+  return [
+    { id: "model", shortTitle: "Speech model", state: modelState },
+    { id: "mic", shortTitle: "Microphone", state: micState },
+    { id: "ax", shortTitle: "Accessibility", state: axState },
+    { id: "ollama", shortTitle: "AI cleanup", state: ollamaState, optional: true },
+    { id: "dictation", shortTitle: "First dictation", state: dictState },
+  ];
+}
+
+// ── Conversational step layout ─────────────────────────────────────────────
+//
+// Single skeleton every step renders into — keeps visual rhythm consistent
+// no matter what's happening internally. Slots, top to bottom:
+//
+//   • Big centered icon
+//   • Plain-English title (sentence case)
+//   • 1–2 line subtitle in muted text
+//   • Optional `children` (pickers, dictation textarea — content above CTA)
+//   • The ONE primary action — large, prominent, only thing you'd click
+//   • Secondary links — tiny, link-style, below the primary CTA
+//
+// All five steps use exactly this. Anything else (badges, multiple buttons,
+// per-step layouts) is intentionally absent so we don't drift back into
+// "every step looks different" land.
+
+function ConversationalStep({
+  header, icon, title, subtitle, primary, secondary, children, success,
+}: {
+  /** Optional sub-step status panel rendered above everything else — used
+   *  by Step 4 to always show "1. Install Ollama / 2. Pick a model" so
+   *  the user can see both pieces of the setup at a glance no matter
+   *  which sub-state they're currently in. */
+  header?: React.ReactNode;
+  icon: React.ReactNode;
+  title: string;
+  subtitle: React.ReactNode;
+  /** The ONE primary action. Null when the step is in a terminal "done" view
+   *  and the user just clicks Next in the footer. */
+  primary?: React.ReactNode;
+  /** Small link-style alternatives below the primary action. */
+  secondary?: React.ReactNode;
+  /** Pre-CTA content — picker UIs, the dictation textarea, etc. */
+  children?: React.ReactNode;
+  /** Tints the icon green to signal "this step is done". */
+  success?: boolean;
+}) {
+  return (
+    <div className={`cs-step${success ? " cs-step--success" : ""}`}>
+      {header && <div className="cs-header">{header}</div>}
+      <div className="cs-icon-wrap">{icon}</div>
+      <h1 className="cs-title">{title}</h1>
+      <div className="cs-subtitle">{subtitle}</div>
+      {children && <div className="cs-content">{children}</div>}
+      {primary && <div className="cs-primary-slot">{primary}</div>}
+      {secondary && <div className="cs-secondary-slot">{secondary}</div>}
+    </div>
+  );
+}
+
+/// Two-row sub-step status panel for Step 4 (Ollama). Always visible
+/// when the user is on Step 4, regardless of which sub-state they're in
+/// (not-installed / installed-not-running / picking model / pulling /
+/// done). Makes the user's mental model — "I need to (1) install Ollama
+/// and (2) pick a model" — visible at all times.
+///
+/// Sub-step 1's detail row uses **two pills** (one per install shape)
+/// rather than a single text label, so the user can see at a glance
+/// which shape(s) they have — present pills are tinted green with a ✓,
+/// absent ones are muted with an em-dash. Earlier versions just said
+/// "Menu-bar app + CLI" which was technically correct but hard to scan.
+function OllamaSubSteps({ status, activeModel }: {
+  status: OnboardingStatus;
+  activeModel?: OllamaModelInfo;
+}) {
+  // Verify-tips open/close state is owned here (not by the disclosure
+  // component) so the trigger can be placed inline with the sub-step
+  // title — i.e. "Install Ollama  ▸ verify" all on one row — while the
+  // expandable content still renders below the pills.
+  const [verifyOpen, setVerifyOpen] = useState(false);
+  const installDone = status.ollama_installed;
+  const modelDone = !!activeModel?.is_pulled;
+
+  return (
+    <div className="ob-substeps-panel">
+      <ol className="ob-substeps">
+        {/* Sub-step 1: two visible lines —
+              • Line 1: "Install Ollama" + inline "▸ verify" trigger
+              • Line 2: install-shape pills ([✓ App] [✓ CLI])
+            When verify is clicked the tips render below this panel
+            (full width, see `<div className="ob-substeps-verify">`
+            below) — not inside this column. That keeps both substep
+            columns the same height. */}
+        <li className={installDone ? "ob-substep--done" : "ob-substep--todo"}>
+          <span className="ob-substep-mark">{installDone ? "✓" : "1"}</span>
+          <div className="ob-substep-text">
+            <div className="ob-substep-title-row">
+              <span className="ob-substep-title">Install Ollama</span>
+              <button
+                type="button"
+                className="ob-substep-verify-link"
+                onClick={() => setVerifyOpen(o => !o)}
+                aria-expanded={verifyOpen}
+              >
+                {verifyOpen ? "▾" : "▸"} verify
+              </button>
+            </div>
+            <OllamaInstallPills
+              appInstalled={status.ollama_app_installed}
+              cliInstalled={status.ollama_cli_installed}
+            />
+          </div>
+        </li>
+        {/* Sub-step 2: title + active model rendered as a chip (matches
+            the App/CLI pill style on sub-step 1 for visual consistency).
+            When no model is pulled yet, falls back to plain detail text
+            because a "Not yet" chip would be redundant with the muted
+            mark on the left. */}
+        <li className={modelDone ? "ob-substep--done" : "ob-substep--todo"}>
+          <span className="ob-substep-mark">{modelDone ? "✓" : "2"}</span>
+          <div className="ob-substep-text">
+            <span className="ob-substep-title">Pick an AI model</span>
+            {modelDone ? (
+              <div className="oi-pills">
+                <span className="oi-pill oi-pill--present">
+                  <span className="oi-pill-mark">✓</span>
+                  {activeModel!.display_name}
+                </span>
+              </div>
+            ) : (
+              <span className="ob-substep-detail">
+                {activeModel
+                  ? `${activeModel.display_name} — not downloaded`
+                  : "Not yet — pick one below"}
+              </span>
+            )}
+          </div>
+        </li>
+      </ol>
+      {/* Full-width verify info box. Lives outside the 2-col substeps
+          grid so it spans the entire panel width when opened, instead
+          of squeezing into the left column. Divider above visually
+          separates it from the substep rows. */}
+      {verifyOpen && (
+        <div className="ob-substeps-verify">
+          <OllamaInstallVerifyTipsContent
+            appInstalled={status.ollama_app_installed}
+            cliInstalled={status.ollama_cli_installed}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// `InstallPill` moved to the shared `OllamaInstallStatus` component
+// (`src/components/OllamaInstallStatus.tsx`) so both the Setup Guide
+// and Settings → Models render the same widget.
+
+function PrimaryButton({ onClick, disabled, danger, children }: {
   onClick: () => void | Promise<void>;
+  disabled?: boolean;
   danger?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <button
       type="button"
-      className={`ob-action-btn${danger ? " ob-action-btn--danger" : ""}`}
+      className={`cs-primary-btn${danger ? " cs-primary-btn--danger" : ""}`}
+      onClick={() => { void onClick(); }}
+      disabled={disabled}
+    >
+      {children}
+    </button>
+  );
+}
+
+function SecondaryLink({ onClick, children }: {
+  onClick: () => void | Promise<void>;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      className="cs-secondary-link"
       onClick={() => { void onClick(); }}
     >
       {children}
@@ -297,374 +609,476 @@ function ActionButton({ onClick, danger, children }: {
   );
 }
 
-/// Brief always-visible explainer of what Ollama is and why this step
-/// exists. Shown above the install-diagnostics checklist on Step 4. The
-/// user shouldn't have to click anything to understand the concept.
-function OllamaExplainer() {
+// ── Per-step renderers ─────────────────────────────────────────────────────
+
+interface StepProps {
+  status: OnboardingStatus;
+  models: ModelInfo[];
+  ollamaModels: OllamaModelInfo[];
+  pullingOllamaTag: string | null;
+  setPullingOllamaTag: (v: string | null) => void;
+  onContinue: () => void;
+}
+
+function Step1Whisper({ status, models, onContinue }: StepProps) {
+  const recommended = models.find(m => m.is_recommended) ?? models[0];
+  const downloading = models.find(m => m.is_downloading);
+  const cachedActive = models.find(m => m.is_active && m.is_cached);
+  const [showAll, setShowAll] = useState(false);
+
+  // ── Terminal: model is downloaded and active ─────────────────────────────
+  if (cachedActive) {
+    return (
+      <ConversationalStep
+        icon={ICONS.model}
+        success
+        title="Speech recognition is ready"
+        subtitle={<>
+          <strong>{cachedActive.label}</strong> ({cachedActive.size}) is downloaded
+          and loaded. Soll uses Whisper to turn speech into text — all on your Mac.
+        </>}
+        primary={
+          <PrimaryButton onClick={onContinue}>Continue</PrimaryButton>
+        }
+        secondary={
+          <SecondaryLink onClick={() => setShowAll(s => !s)}>
+            {showAll ? "Hide model options" : "Use a different model size"}
+          </SecondaryLink>
+        }
+      >
+        {showAll && <ModelPicker models={models} downloadPct={status.model_download_pct} />}
+      </ConversationalStep>
+    );
+  }
+
+  // ── Active: a download is in flight right now ────────────────────────────
+  if (downloading) {
+    const pct = status.model_download_pct;
+    return (
+      <ConversationalStep
+        icon={ICONS.model}
+        title={`Downloading ${downloading.label}…`}
+        subtitle={pct != null
+          ? `${pct}% complete. Safe to leave this window open — Soll will continue in the background.`
+          : "Starting download…"}
+        primary={
+          <PrimaryButton onClick={() => invoke("model_cancel_download")}>
+            Pause download
+          </PrimaryButton>
+        }
+        secondary={
+          <SecondaryLink onClick={() => setShowAll(s => !s)}>
+            {showAll ? "Hide model options" : "Switch to a different size"}
+          </SecondaryLink>
+        }
+      >
+        {showAll && <ModelPicker models={models} downloadPct={pct} />}
+      </ConversationalStep>
+    );
+  }
+
+  // ── Initial: no model downloaded yet ─────────────────────────────────────
   return (
-    <p className="ob-ollama-explainer">
-      <strong>Ollama</strong> is a small server that runs a local LLM on
-      your Mac. Soll talks to it over <code>localhost:11434</code> to clean
-      up transcripts (remove "um", fix punctuation) and power voice-triggered
-      Skills. Everything stays on-device — no cloud, no account.
-    </p>
+    <ConversationalStep
+      icon={ICONS.model}
+      title="First, let's set up speech recognition"
+      subtitle={<>
+        Soll uses <strong>Whisper</strong> — a small AI model that converts your
+        speech into text. Everything runs on your Mac. We recommend the{" "}
+        <strong>{recommended.label}</strong> model: best quality on Apple Silicon.
+      </>}
+      primary={
+        <PrimaryButton onClick={async () => {
+          await invoke("model_select", { id: recommended.id });
+          void invoke("model_download", { id: recommended.id });
+        }}>
+          Download {recommended.label} ({recommended.size})
+        </PrimaryButton>
+      }
+      secondary={
+        <SecondaryLink onClick={() => setShowAll(s => !s)}>
+          {showAll ? "Hide model options" : "Choose a different size"}
+        </SecondaryLink>
+      }
+    >
+      {showAll && <ModelPicker models={models} downloadPct={status.model_download_pct} />}
+    </ConversationalStep>
   );
 }
 
-function OllamaInstructions() {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="ob-ollama-wrap">
-      <button type="button" className="ob-ollama-toggle" onClick={() => setOpen(o => !o)}>
-        {open ? "▾ Hide install instructions" : "▸ How do I install Ollama?"}
-      </button>
-      {open && (
-        <div className="ob-ollama-instructions">
-          <p className="subtle">
-            <strong>Two install shapes — pick one:</strong>
-          </p>
-          <p className="subtle">
-            <strong>A. App bundle (recommended for most people).</strong>{" "}
-            Installs an Ollama menu-bar app that auto-starts on login. Soll's
-            "Open Ollama" button can launch it for you.
-          </p>
-          <code className="ob-code-block">brew install --cask ollama</code>
-          <p className="subtle" style={{ marginTop: 10 }}>
-            <strong>B. CLI only (smaller, scriptable).</strong>{" "}
-            No menu-bar app, no login item — just the <code>ollama</code>{" "}
-            command. Soll's "Open Ollama" button runs <code>ollama serve</code>{" "}
-            in the background.
-          </p>
-          <code className="ob-code-block">brew install ollama</code>
-          <p className="subtle" style={{ marginTop: 10 }}>
-            Either install also works if you grab the DMG from{" "}
-            <code>ollama.com</code> instead of Homebrew.
-          </p>
-          <p className="subtle" style={{ marginTop: 10 }}>
-            After installing, click <strong>Open Ollama</strong> above — Soll
-            detects the running server within 2 seconds and lets you pick a
-            model below. The first pull (1.5–5 GB depending on model) runs
-            in the background.
-          </p>
-        </div>
-      )}
-    </div>
-  );
-}
+function Step2Mic({ status, onContinue }: StepProps) {
+  const state = status.mic_permission;
 
-/// Visual checklist showing the user exactly which Ollama pieces are
-/// installed and which are missing. Surfaced on Step 4 when Ollama isn't
-/// running, so the user can see at a glance whether they need to install
-/// anything before "Open Ollama" will help.
-///
-/// Three independent signals:
-///   • `.app` bundle at /Applications/Ollama.app — the cask install
-///   • CLI at /opt/homebrew/bin/ollama (or /usr/local/) — the formula install
-///   • Server responding on port 11434 — the daemon is up
-function OllamaInstallDiagnostics({ status }: { status: OnboardingStatus }) {
-  const rows: { ok: boolean; label: string; hint?: string }[] = [
-    {
-      ok: status.ollama_app_installed,
-      label: "Ollama.app installed",
-      hint: status.ollama_app_installed
-        ? undefined
-        : "Run: brew install --cask ollama",
-    },
-    {
-      ok: status.ollama_cli_installed,
-      label: "Ollama CLI installed",
-      hint: status.ollama_cli_installed
-        ? undefined
-        : "Run: brew install ollama",
-    },
-    {
-      ok: status.ollama_running,
-      label: "Server running on port 11434",
-      hint: status.ollama_running
-        ? undefined
-        : "Click 'Open Ollama' below — Soll will launch it for you.",
-    },
-  ];
-  return (
-    <ul className="ob-install-diag">
-      {rows.map((r, i) => (
-        <li key={i} className={r.ok ? "ob-install-diag-ok" : "ob-install-diag-missing"}>
-          <span className="ob-install-diag-icon">{r.ok ? "✓" : "✗"}</span>
-          <span className="ob-install-diag-label">{r.label}</span>
-          {r.hint && <span className="ob-install-diag-hint">{r.hint}</span>}
-        </li>
-      ))}
-    </ul>
-  );
-}
+  if (state === "granted") {
+    return (
+      <ConversationalStep
+        icon={ICONS.mic}
+        success
+        title="Microphone access granted"
+        subtitle="Soll can now hear you when you hold the dictation shortcut."
+        primary={<PrimaryButton onClick={onContinue}>Continue</PrimaryButton>}
+        secondary={
+          <SecondaryLink onClick={() => invoke("open_privacy_settings", { section: "Privacy_Microphone" })}>
+            Manage in System Settings
+          </SecondaryLink>
+        }
+      />
+    );
+  }
 
-// ── Toggle ─────────────────────────────────────────────────────────────────
+  // macOS only shows the request dialog once. After "denied", the request
+  // API returns instantly without re-prompting — only path back is System
+  // Settings. So change the primary CTA accordingly.
+  if (state === "denied") {
+    return (
+      <ConversationalStep
+        icon={ICONS.mic}
+        title="Microphone access was declined"
+        subtitle="macOS won't show its permission dialog a second time. Open System Settings → Privacy → Microphone and toggle Soll on."
+        primary={
+          <PrimaryButton onClick={() => invoke("open_privacy_settings", { section: "Privacy_Microphone" })}>
+            Open System Settings
+          </PrimaryButton>
+        }
+      />
+    );
+  }
 
-function Toggle({ on, disabled, onEnable, onDisable }: {
-  on: boolean;
-  disabled?: boolean;
-  onEnable?: () => void;
-  onDisable?: () => void;
-}) {
+  // pending — fresh request
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      disabled={disabled}
-      className={`ob-toggle ${on ? "ob-toggle--on" : ""}`}
-      onClick={() => on ? onDisable?.() : onEnable?.()}
+    <ConversationalStep
+      icon={ICONS.mic}
+      title="Soll needs to hear you"
+      subtitle="Grant microphone access so Soll can record your voice when you hold the dictation shortcut. Audio is processed locally — never sent to a server."
+      primary={
+        <PrimaryButton onClick={() => invoke("request_mic_permission")}>
+          Grant microphone access
+        </PrimaryButton>
+      }
+      secondary={
+        <SecondaryLink onClick={() => invoke("open_privacy_settings", { section: "Privacy_Microphone" })}>
+          Or open System Settings directly
+        </SecondaryLink>
+      }
     />
   );
 }
 
-// ── Step derivation ────────────────────────────────────────────────────────
+function Step3Accessibility({ status, onContinue }: StepProps) {
+  if (status.accessibility) {
+    return (
+      <ConversationalStep
+        icon={ICONS.accessibility}
+        success
+        title="Accessibility access granted"
+        subtitle="Soll can now paste transcribed text wherever your cursor is."
+        primary={<PrimaryButton onClick={onContinue}>Continue</PrimaryButton>}
+        secondary={
+          <SecondaryLink onClick={() => invoke("open_privacy_settings", { section: "Privacy_Accessibility" })}>
+            Manage in System Settings
+          </SecondaryLink>
+        }
+      />
+    );
+  }
 
-interface DeriveOpts {
-  pullingOllamaTag: string | null;
-  setPullingOllamaTag: (v: string | null) => void;
-  models: ModelInfo[];
-  ollamaModels: OllamaModelInfo[];
+  // Identity-mismatch path: this build's codesign identifier isn't
+  // `com.soll.app`, so any toggle the user flips in System Settings is
+  // recorded against the wrong identity. Tccutil reset clears the stale
+  // grant; the next request creates a fresh entry tied to the running
+  // signature. See onboarding.rs::current_signing_identifier.
+  if (!status.signing_identifier_ok) {
+    return (
+      <ConversationalStep
+        icon={ICONS.accessibility}
+        title="Reset the Accessibility grant"
+        subtitle={<>
+          This build isn't signed as <code>com.soll.app</code>, so any toggle
+          in System Settings is recorded against a different identity and
+          doesn't reach this process. Click below to clear the stale grant,
+          then toggle Soll on in System Settings and restart.
+        </>}
+        primary={
+          <PrimaryButton onClick={async () => {
+            await invoke("reset_accessibility_grant");
+            await invoke("open_privacy_settings", { section: "Privacy_Accessibility" });
+          }}>
+            Reset &amp; open System Settings
+          </PrimaryButton>
+        }
+        secondary={
+          <SecondaryLink onClick={() => invoke("restart_app")}>
+            Restart Soll to apply
+          </SecondaryLink>
+        }
+      />
+    );
+  }
+
+  // Normal pending path
+  return (
+    <ConversationalStep
+      icon={ICONS.accessibility}
+      title="Soll needs to paste into other apps"
+      subtitle={<>
+        Grant accessibility access so transcribed text appears wherever your
+        cursor is — Slack, Notes, Terminal, anywhere. macOS caches this status
+        per process, so you'll need to <strong>restart Soll once</strong> after
+        flipping the toggle in System Settings.
+      </>}
+      primary={
+        <PrimaryButton onClick={() => invoke("request_accessibility_permission")}>
+          Open System Settings
+        </PrimaryButton>
+      }
+      secondary={
+        <SecondaryLink onClick={() => invoke("restart_app")}>
+          I&apos;ve granted it — restart Soll to apply
+        </SecondaryLink>
+      }
+    />
+  );
 }
 
-function deriveSteps(s: OnboardingStatus, opts: DeriveOpts): StepDef[] {
-  const modelState: StepState = s.model_cached ? "done"
-    : s.model_downloading ? "in_progress" : "pending";
-
-  const micState: StepState = s.mic_permission === "granted" ? "done"
-    : s.mic_permission === "denied" ? "denied" : "pending";
-
-  const axState: StepState  = s.accessibility ? "done" : "pending";
-
-  // Ollama is "done" once the *active* model (the one Soll will use for
-  // cleanup) is pulled. We don't accept "any pulled" — having Qwen sitting
-  // on disk doesn't help if Llama is the active default and isn't pulled.
-  const activeOllamaModel = opts.ollamaModels.find(m => m.is_active);
-  const ollamaState: StepState =
-    s.ollama_running && activeOllamaModel?.is_pulled ? "done"
-    : opts.pullingOllamaTag ? "in_progress"
-    : "pending";
-
-  const dictState: StepState   = s.has_dictated  ? "done" : "pending";
-
-  // ── Step 1: Whisper model ────────────────────────────────────────────────
-  const activeModel = opts.models.find(m => m.is_active);
-  const downloadingModel = opts.models.find(m => m.is_downloading);
-  const cachedModel = opts.models.find(m => m.is_cached);
-  // Pick the model the description should talk about. Order matters:
-  //   1. Anything actively downloading right now.
-  //   2. The active model — but only if it's cached (i.e. truly in use).
-  //      Without this, when multiple models are cached `cachedModel` returns
-  //      the *first* one in WhisperModel::ALL (e.g. Tiny) even if Medium is
-  //      the one Soll is actually using. That mismatch made the desc say
-  //      "Tiny is ready" while the toggle correctly highlighted Medium.
-  //   3. Any cached model, as a last-resort fallback.
-  //   4. The active selection (may not be cached yet — pre-download).
-  const focusModel =
-    downloadingModel
-    ?? (activeModel?.is_cached ? activeModel : undefined)
-    ?? cachedModel
-    ?? activeModel;
-  const focusLabel = focusModel
-    ? `${focusModel.label} (${focusModel.size})`
-    : "Small (466 MB)";
-
-  const modelStep: StepDef = {
-    id: "model",
-    iconNode: ICONS.model,
-    title: "Speech recognition model",
-    state: modelState,
-    desc: s.model_downloading
-      ? `Downloading ${focusLabel}…${s.model_download_pct != null ? ` ${s.model_download_pct}%` : ""}`
-      : modelState === "done"
-      ? `${focusLabel} is ready. You can switch models anytime from Settings.`
-      : `Pick the model you want — toggle it on to download. You can change this later in Settings.`,
-    extra: <ModelPicker models={opts.models} />,
-  };
-
-  // ── Step 2: Microphone ───────────────────────────────────────────────────
-  // macOS only shows the request dialog once. After a "denied" state (revoked
-  // in Settings, or declined in the dialog), AVCaptureDevice.requestAccess
-  // returns instantly without prompting — so we must redirect to Settings.
-  const micStep: StepDef = {
-    id: "mic",
-    iconNode: ICONS.mic,
-    title: "Microphone access",
-    state: micState,
-    desc: micState === "denied"
-      ? "Microphone access was previously declined. Toggle on to open System Settings — macOS won't show the dialog a second time."
-      : "Soll needs microphone access to record your voice when you hold the shortcut.",
-    onToggleOn: micState === "pending"
-      ? () => invoke("request_mic_permission")
-      : micState === "denied"
-      ? () => invoke("open_privacy_settings", { section: "Privacy_Microphone" })
-      : undefined,
-    onToggleOff: micState === "done"
-      ? () => invoke("open_privacy_settings", { section: "Privacy_Microphone" })
-      : undefined,
-    onNote: micState === "done"
-      ? "macOS only allows revoking via System Settings — toggling off opens the right pane."
-      : undefined,
-  };
-
-  // ── Step 3: Accessibility ────────────────────────────────────────────────
-  // Two pending sub-cases, surfaced differently:
-  //
-  //   A) signing_identifier_ok = true (the common case): the user just
-  //      hasn't granted yet, or granted but the running process needs to
-  //      restart — AXIsProcessTrusted caches its result for the lifetime
-  //      of the process. We show the standard "Restart Soll to apply"
-  //      remedy.
-  //
-  //   B) signing_identifier_ok = false: the running binary's codesign
-  //      identifier doesn't match `com.soll.app`. This means *any* TCC
-  //      grant the user makes against the existing "Soll" System Settings
-  //      entry won't apply, because TCC keys grants by signing identifier
-  //      and the running process has a different one (typically
-  //      `soll-<hash>` from a linker-signed local build). Restarting alone
-  //      can't fix this — we need to wipe the stale grant via tccutil so
-  //      macOS will create a fresh entry tied to the new signature on the
-  //      next access attempt. Show a dedicated "Reset & re-grant" path
-  //      instead of looping the user on "Restart Soll".
-  const identityMismatch = !s.signing_identifier_ok;
-  const axStep: StepDef = {
-    id: "accessibility",
-    iconNode: ICONS.accessibility,
-    title: "Accessibility access",
-    state: axState,
-    desc: "Soll uses Accessibility to paste text into any app. Without it, transcribed text won't be inserted at your cursor.",
-    onToggleOn: axState !== "done"
-      ? () => invoke("request_accessibility_permission")
-      : undefined,
-    onToggleOff: axState === "done"
-      ? () => invoke("open_privacy_settings", { section: "Privacy_Accessibility" })
-      : undefined,
-    onNote: axState === "done"
-      ? "macOS only allows revoking via System Settings — toggling off opens the right pane."
-      : undefined,
-    extra: axState !== "done" ? (
-      identityMismatch ? (
-        <div className="ob-step-extra-stack">
-          <p className="ob-toggle-note">
-            <strong>Signing-identity mismatch detected.</strong> This build
-            isn't signed as <code>com.soll.app</code>, so any toggle you flip
-            in System Settings is recorded against a different identity and
-            doesn't reach this process. Common cause: a local{" "}
-            <code>pnpm tauri build</code> without the re-sign step. Click
-            below to clear the stale grant and re-prompt cleanly — then
-            toggle Soll on in System Settings and restart.
-          </p>
-          <div className="ob-step-actions-row">
-            <ActionButton onClick={async () => {
-              await invoke("reset_accessibility_grant");
-              await invoke("open_privacy_settings", { section: "Privacy_Accessibility" });
-            }}>
-              Reset &amp; re-grant
-            </ActionButton>
-            <ActionButton onClick={() => invoke("restart_app")}>
-              Restart Soll to apply
-            </ActionButton>
-          </div>
-        </div>
-      ) : (
-        <div className="ob-step-extra-stack">
-          <p className="ob-toggle-note">
-            Already granted in System Settings? macOS caches Accessibility status until restart.
-          </p>
-          <ActionButton onClick={() => invoke("restart_app")}>
-            Restart Soll to apply
-          </ActionButton>
-        </div>
-      )
-    ) : undefined,
-  };
-
-  // ── Step 4: Ollama — AI cleanup (RECOMMENDED, but optional) ──────────────
-  //
-  // Recommended because it unlocks filler-word removal + Skills. Optional
-  // because dictation works fine without it — raw Whisper transcripts go
-  // straight to the cursor. The Next button is always enabled so users
-  // can move past this step without a configured model; the copy below
-  // makes that explicit.
-  //
-  // When Ollama isn't running we surface an install-diagnostics checklist
-  // (.app present? CLI present? Server up?) instead of the older single
-  // "installed/not installed" line — users were confused about which
-  // install shape they had, and what to do next.
-  const pullingOllamaTag = opts.pullingOllamaTag;
-  const pullingOllamaModel = pullingOllamaTag
-    ? opts.ollamaModels.find(m => m.tag === pullingOllamaTag)
+function Step4Ollama({ status, ollamaModels, pullingOllamaTag, setPullingOllamaTag, onContinue }: StepProps) {
+  const activeOllamaModel = ollamaModels.find(m => m.is_active);
+  const pullingModel = pullingOllamaTag
+    ? ollamaModels.find(m => m.tag === pullingOllamaTag)
     : undefined;
-  const ollamaStep: StepDef = {
-    id: "ollama",
-    iconNode: ICONS.ollama,
-    title: "Ollama — AI cleanup (optional)",
-    state: ollamaState,
-    desc: !s.ollama_running
-      ? "Recommended: enables filler-word removal and voice-triggered Skills. Soll dictates fine without it — you can skip this step or come back to it later."
-      : pullingOllamaModel
-      ? `Pulling ${pullingOllamaModel.display_name} (${pullingOllamaModel.size})${pullingOllamaModel.pull_pct != null ? ` — ${pullingOllamaModel.pull_pct}%` : "…"}. First pull can take 5–10 minutes. Safe to leave this window open.`
-      : activeOllamaModel?.is_pulled
-      ? `${activeOllamaModel.display_name} is your default. You can switch models anytime from Settings.`
-      : "Pick a default model — toggling one selects it (and downloads it if not already on disk). You can change this later in Settings.",
-    extra: !s.ollama_running ? (
-      <div className="ob-step-extra-stack">
-        <OllamaExplainer />
-        <OllamaInstallDiagnostics status={s} />
-        {s.ollama_installed ? (
-          <ActionButton onClick={() => invoke("open_ollama")}>
-            Open Ollama
-          </ActionButton>
-        ) : (
-          <OllamaInstructions />
-        )}
-        <p className="ob-toggle-note">
-          Or skip this step — Soll dictates fine without AI cleanup.
-          You can configure Ollama later in Settings → Models.
-        </p>
-      </div>
-    ) : (
-      <div className="ob-step-extra-stack">
-        <OllamaModelPicker
-          models={opts.ollamaModels}
-          ollamaRunning={s.ollama_running}
-          pullingTag={opts.pullingOllamaTag}
-          onPullStart={(tag) => opts.setPullingOllamaTag(tag)}
-        />
-        {activeOllamaModel?.is_pulled && (
-          <ActionButton
-            danger
-            onClick={async () => {
-              if (!confirm(`Delete ${activeOllamaModel.display_name} from Ollama? You'll need to re-pull it before AI cleanup works again.`)) return;
-              await invoke("ollama_delete_active");
-            }}
-          >
+  const recommended = ollamaModels.find(m => m.tag === "llama3.2:3b") ?? ollamaModels[0];
+
+  // Sub-step status panel — rendered above every state below so the
+  // user always sees both pieces of the setup ("install Ollama" +
+  // "pick a model") with their current state, regardless of which
+  // sub-state we're rendering. Closes the long-standing UX gap where
+  // the model picker view hid whether Ollama itself was installed.
+  const subSteps = <OllamaSubSteps status={status} activeModel={activeOllamaModel} />;
+
+  // ── Terminal: a model is pulled and ready ────────────────────────────────
+  if (status.ollama_running && activeOllamaModel?.is_pulled) {
+    return (
+      <ConversationalStep
+        header={subSteps}
+        icon={ICONS.ollama}
+        success
+        title="AI cleanup is ready"
+        subtitle={<>
+          <strong>{activeOllamaModel.display_name}</strong> is your active
+          model. Soll will use it to clean up transcripts and run Skills.
+          You can change models anytime in Settings.
+        </>}
+        primary={<PrimaryButton onClick={onContinue}>Continue</PrimaryButton>}
+        secondary={
+          <SecondaryLink onClick={async () => {
+            if (!confirm(`Delete ${activeOllamaModel.display_name} from Ollama? You'll need to re-pull it before AI cleanup works again.`)) return;
+            await invoke("ollama_delete_active");
+          }}>
             Delete {activeOllamaModel.display_name}
-          </ActionButton>
-        )}
-      </div>
-    ),
-  };
+          </SecondaryLink>
+        }
+      />
+    );
+  }
 
-  // ── Step 5: First dictation ──────────────────────────────────────────────
-  const dictStep: StepDef = {
-    id: "dictation",
-    iconNode: ICONS.dictation,
-    title: "Your first dictation",
-    state: dictState,
-    desc: dictState === "done"
-      ? "Dictation is working. You can keep practising in the box, or finish the setup."
-      : "Click into the box below, hold ⌃⇧Space, speak naturally, then release.",
-    extra: <DictationTest status={s} />,
-  };
+  // ── Active: a pull is in flight ──────────────────────────────────────────
+  if (status.ollama_running && pullingModel) {
+    return (
+      <ConversationalStep
+        header={subSteps}
+        icon={ICONS.ollama}
+        title={`Downloading ${pullingModel.display_name}…`}
+        subtitle={pullingModel.pull_pct != null
+          ? `${pullingModel.pull_pct}% of ${pullingModel.size}. First pull can take 5–10 minutes — safe to leave this open.`
+          : `Starting download of ${pullingModel.size}…`}
+        primary={
+          <PrimaryButton onClick={async () => {
+            await invoke("ollama_cancel_pull");
+            setPullingOllamaTag(null);
+          }}>
+            Pause download
+          </PrimaryButton>
+        }
+      />
+    );
+  }
 
-  return [modelStep, micStep, axStep, ollamaStep, dictStep];
+  // ── Ollama up, no model pulled yet ───────────────────────────────────────
+  if (status.ollama_running && recommended) {
+    return (
+      <ConversationalStep
+        header={subSteps}
+        icon={ICONS.ollama}
+        title="Pick an AI model"
+        subtitle={<>
+          Soll uses a small language model to clean up transcripts. We recommend{" "}
+          <strong>{recommended.display_name}</strong> — fast, accurate, runs well
+          on Apple Silicon. You can change this anytime in Settings.
+        </>}
+        primary={
+          <PrimaryButton onClick={async () => {
+            await invoke("ollama_model_set", { tag: recommended.tag });
+            setPullingOllamaTag(recommended.tag);
+            void invoke("ollama_pull_active");
+          }}>
+            Download {recommended.display_name} ({recommended.size})
+          </PrimaryButton>
+        }
+        secondary={
+          <>
+            <SecondaryLink onClick={onContinue}>Skip — I&apos;ll use raw transcripts</SecondaryLink>
+          </>
+        }
+      >
+        <OllamaModelPicker
+          models={ollamaModels}
+          ollamaRunning={status.ollama_running}
+          pullingTag={pullingOllamaTag}
+          onPullStart={setPullingOllamaTag}
+          onPullCancel={() => setPullingOllamaTag(null)}
+        />
+      </ConversationalStep>
+    );
+  }
+
+  // ── Ollama not installed at all ──────────────────────────────────────────
+  if (!status.ollama_installed) {
+    return (
+      <ConversationalStep
+        header={subSteps}
+        icon={ICONS.ollama}
+        title="Install Ollama"
+        subtitle={<>
+          Ollama is a small program that runs an AI model on your Mac so Soll
+          can clean up transcripts and run Skills. Everything stays local — no
+          cloud account, no data leaves your computer.
+        </>}
+        primary={
+          <PrimaryButton onClick={() => invoke("install_ollama_via_terminal", { shape: "app" })}>
+            Install Ollama
+          </PrimaryButton>
+        }
+        secondary={
+          <>
+            <SecondaryLink onClick={() => invoke("install_ollama_via_terminal", { shape: "cli" })}>
+              Or install the command-line tool instead
+            </SecondaryLink>
+            <SecondaryLink onClick={onContinue}>
+              Skip — Soll dictates fine without AI cleanup
+            </SecondaryLink>
+          </>
+        }
+      />
+    );
+  }
+
+  // ── Ollama installed but not running ─────────────────────────────────────
+  return (
+    <ConversationalStep
+      header={subSteps}
+      icon={ICONS.ollama}
+      title="Start Ollama"
+      subtitle={status.ollama_app_installed
+        ? <>The menu-bar Ollama app is installed at <code>/Applications/Ollama.app</code> but isn&apos;t running. Soll will launch it and detect the server within 2 seconds.</>
+        : <>The Ollama CLI is installed at <code>/opt/homebrew/bin/ollama</code> but the server isn&apos;t running. Soll will run <code>ollama serve</code> in the background.</>}
+      primary={
+        <PrimaryButton onClick={() => invoke("open_ollama")}>
+          Start Ollama
+        </PrimaryButton>
+      }
+      secondary={
+        <SecondaryLink onClick={onContinue}>
+          Skip — I&apos;ll set this up later
+        </SecondaryLink>
+      }
+    />
+  );
+}
+
+function Step5Dictation({ status }: StepProps) {
+  // `onContinue` deliberately unused — Step 5 never renders an in-step
+  // primary CTA. The footer's "All Done ✓" handles closing the wizard.
+  // The "ready" check is intentionally broader than `has_dictated`:
+  // permissions can be revoked between sessions (System Settings has
+  // its own UI for that), or the user can land on Step 5 with a
+  // previous `has_dictated=true` flag stuck in settings while their
+  // mic / accessibility grants have lapsed. Showing "You're all set"
+  // in that state — as the earlier version did — was misleading.
+  const blockers: string[] = [];
+  if (!status.model_cached) blockers.push("Speech model isn't downloaded (Step 1)");
+  if (status.mic_permission !== "granted") blockers.push("Microphone access (Step 2)");
+  if (!status.accessibility) blockers.push("Accessibility access (Step 3)");
+  const truly_ready = blockers.length === 0;
+
+  // ── Success: dictation works AND every prerequisite still holds.
+  //
+  // No primary CTA here — the footer's "All Done ✓" button already
+  // closes the wizard with the same effect, and duplicating it inside
+  // the step pushed the textarea past the first fold on a 600px-tall
+  // window.
+  if (status.has_dictated && truly_ready) {
+    return (
+      <ConversationalStep
+        icon={ICONS.dictation}
+        success
+        title="You're all set"
+        subtitle="Hold ⌃⇧Space anywhere on your Mac to dictate. Reopen this guide from the menu-bar icon whenever you need it."
+      >
+        <DictationTest status={status} />
+      </ConversationalStep>
+    );
+  }
+
+  // ── Blocked: prerequisites are missing. No textarea — it'd just sit
+  //    there saying "Resolve the issues below first." Drop it and surface
+  //    the blocker list directly, compactly.
+  if (!truly_ready) {
+    return (
+      <ConversationalStep
+        icon={ICONS.dictation}
+        title="Almost there"
+        subtitle={<>
+          A few prerequisites still need to be set up before you can dictate.
+          Go back and finish them — then come here to test.
+        </>}
+      >
+        <div className="ob-blocker-compact">
+          <strong>Still to do:</strong>
+          <ul>{blockers.map((b, i) => <li key={i}>{b}</li>)}</ul>
+        </div>
+      </ConversationalStep>
+    );
+  }
+
+  // ── Ready but not yet dictated.
+  return (
+    <ConversationalStep
+      icon={ICONS.dictation}
+      title="Try it out"
+      subtitle={<>
+        Click into the box below, hold <kbd>⌃⇧Space</kbd>, speak naturally, then
+        release. Your words appear in the box — and in any app you use Soll in.
+      </>}
+    >
+      <DictationTest status={status} />
+    </ConversationalStep>
+  );
+}
+
+function renderStep(idx: number, props: StepProps): React.ReactNode {
+  switch (idx) {
+    case 0: return <Step1Whisper {...props} />;
+    case 1: return <Step2Mic {...props} />;
+    case 2: return <Step3Accessibility {...props} />;
+    case 3: return <Step4Ollama {...props} />;
+    case 4: return <Step5Dictation {...props} />;
+    default: return null;
+  }
 }
 
 // ── Dot progress ───────────────────────────────────────────────────────────
 
 function StepDots({ steps, current, onDotClick }: {
-  steps: StepDef[];
+  steps: StepMeta[];
   current: number;
   onDotClick: (i: number) => void;
 }) {
@@ -680,57 +1094,27 @@ function StepDots({ steps, current, onDotClick }: {
             : "ob-dot"
           }
           onClick={() => onDotClick(i)}
-          title={s.title}
+          title={s.shortTitle}
         />
       ))}
     </div>
   );
 }
 
-// ── Wizard slide ───────────────────────────────────────────────────────────
+// ── Wizard slide wrapper ──────────────────────────────────────────────────
+//
+// Just provides the slide-in animation around whatever step renderer was
+// chosen for `currentStep`. All per-step layout lives inside the renderer
+// itself (see Step1Whisper, Step2Mic, etc.).
 
-function WizardStep({ step, index, total, animDir }: {
-  step: StepDef;
-  index: number;
-  total: number;
+function WizardSlide({ animDir, children }: {
   animDir: "right" | "left";
+  children: React.ReactNode;
 }) {
-  const hasHandlers = !!step.onToggleOn || !!step.onToggleOff;
-  const showToggle = step.alwaysShowToggle || hasHandlers;
-  const toggleOn = step.state === "done" || step.state === "in_progress";
-  // Disabled exactly when clicking would do nothing — i.e. the handler the
-  // toggle would invoke at its current position is missing.
-  const wantedHandler = toggleOn ? step.onToggleOff : step.onToggleOn;
-  const toggleDisabled = !wantedHandler;
-
   return (
     <div className={`ob-slide ob-slide--enter-${animDir}`}>
       <div className="ob-slide-inner">
-        <div className="ob-step-icon-wrap">{step.iconNode}</div>
-
-        <div className="ob-step-meta">
-          <span className="ob-step-num">Step {index + 1} of {total}</span>
-          {step.optional && <span className="ob-optional-tag">Optional</span>}
-          <StatusBadge state={step.state} />
-        </div>
-
-        <div className="ob-step-title">{step.title}</div>
-        <p className="ob-step-desc">{step.desc}</p>
-
-        {showToggle && (
-          <Toggle
-            on={toggleOn}
-            disabled={toggleDisabled}
-            onEnable={step.onToggleOn}
-            onDisable={step.onToggleOff}
-          />
-        )}
-
-        {step.onNote && toggleOn && (
-          <p className="ob-toggle-note">{step.onNote}</p>
-        )}
-
-        {step.extra && <div className="ob-step-extra">{step.extra}</div>}
+        {children}
       </div>
     </div>
   );
@@ -783,8 +1167,18 @@ export function OnboardingApp() {
     return () => clearInterval(id);
   }, []);
 
-  // Clear the local "pulling" flag once polling confirms the model is pulled,
-  // OR Ollama died (so the chip doesn't stay stuck spinning on a failure).
+  // Clear the local "pulling" flag once polling confirms one of:
+  //   • the model finished pulling (success)
+  //   • Ollama died (failure — chip would otherwise stay stuck spinning)
+  //
+  // We *don't* clear on `pull_pct === null` here — that condition is
+  // also true in the brief window between clicking pull (which sets
+  // pullingOllamaTag) and the backend sending its first progress chunk,
+  // so the cleanup would race the kickoff and immediately reset the
+  // optimistic flag. Cancellation is handled separately by the picker
+  // itself: when the user clicks pause, the picker invokes the
+  // `onPullCancel` callback (passed in below) which clears pullingTag
+  // synchronously with the cancel command.
   useEffect(() => {
     if (!pullingOllamaTag) return;
     const m = ollamaModels.find(x => x.tag === pullingOllamaTag);
@@ -835,12 +1229,7 @@ export function OnboardingApp() {
     return <div className="ob-shell"><div className="ob-loading">Loading setup guide…</div></div>;
   }
 
-  const steps       = deriveSteps(status, {
-    pullingOllamaTag,
-    setPullingOllamaTag,
-    models,
-    ollamaModels,
-  });
+  const steps       = deriveStepMeta(status, ollamaModels, pullingOllamaTag);
   // A step counts toward "done" only if the user has visited it AND its
   // state is done. Prevents the bar from jumping ahead because of prereqs
   // that happen to already be met from a prior Soll session.
@@ -851,6 +1240,25 @@ export function OnboardingApp() {
   const pct         = Math.round((doneCount / steps.length) * 100);
   const isFirst     = currentStep === 0;
   const isLast      = currentStep === steps.length - 1;
+
+  const stepProps: StepProps = {
+    status,
+    models,
+    ollamaModels,
+    pullingOllamaTag,
+    setPullingOllamaTag,
+    // Continue/Skip CTAs in the new conversational layout move you forward.
+    // On the last step, "Continue" finishes setup (same path as the footer
+    // All-Done button).
+    onContinue: () => {
+      if (isLast) {
+        if (allReqDone) void completeAndDismiss();
+        else void closeWithoutDismissing();
+      } else {
+        goTo(currentStep + 1);
+      }
+    },
+  };
 
   return (
     <div className="ob-shell">
@@ -882,13 +1290,9 @@ export function OnboardingApp() {
       </div>
 
       {/* Slide */}
-      <WizardStep
-        key={animKey}
-        step={steps[currentStep]}
-        index={currentStep}
-        total={steps.length}
-        animDir={animDir}
-      />
+      <WizardSlide key={animKey} animDir={animDir}>
+        {renderStep(currentStep, stepProps)}
+      </WizardSlide>
 
       {/* Navigation */}
       <div className="ob-nav">

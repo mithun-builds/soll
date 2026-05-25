@@ -1,0 +1,82 @@
+/* Shared Ollama-install-status display — used in Setup Guide Step 4
+   and Settings → Models pane. Two install-shape pills + a click-to-
+   expand "how to verify or install" disclosure. */
+
+.oi-status {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.oi-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 3px;
+}
+
+.oi-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 999px;
+  line-height: 1.4;
+  letter-spacing: 0.01em;
+}
+.oi-pill-mark {
+  font-weight: 700;
+  font-size: 10px;
+}
+.oi-pill--present {
+  background: rgba(74, 222, 128, 0.16);
+  color: #4ade80; /* green-400 */
+}
+.oi-pill--absent {
+  background: rgba(255, 255, 255, 0.04);
+  color: #9ca3af;
+}
+
+/* Click-to-expand toggle for the verify/install tips. Looks like a
+   subtle text link — doesn't compete with anything else on the page. */
+.oi-disclose {
+  background: none;
+  border: 0;
+  padding: 2px 0;
+  margin-top: 2px;
+  font: inherit;
+  font-size: 11px;
+  color: #9ca3af;
+  cursor: pointer;
+  text-align: left;
+  align-self: flex-start;
+}
+.oi-disclose:hover {
+  color: #e5e7eb;
+}
+
+.oi-tips {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #9ca3af;
+}
+.oi-tips p {
+  margin: 0;
+}
+.oi-tips p + p {
+  margin-top: 3px;
+}
+.oi-tips strong {
+  color: #e5e7eb;
+  font-weight: 600;
+}
+.oi-tips code {
+  font-size: 10.5px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #e5e7eb;
+}

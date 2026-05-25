@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { OllamaInstallStatus } from "../../components/OllamaInstallStatus";
 
 type WhisperModel = {
   id: string;
@@ -26,22 +27,35 @@ type Snapshot = {
   ai_cleanup_enabled: boolean;
 };
 
+/// Subset of OnboardingStatus we actually need in the Settings pane —
+/// just whether each Ollama install shape is on disk, so we can render
+/// the same OllamaInstallStatus pills that Step 4 shows.
+type OnboardingStatusSubset = {
+  ollama_app_installed: boolean;
+  ollama_cli_installed: boolean;
+};
+
 export function ModelsPane() {
   const [whisperModels, setWhisperModels] = useState<WhisperModel[]>([]);
   const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([]);
   const [aiOn, setAiOn] = useState(true);
+  const [ollamaAppInstalled, setOllamaAppInstalled] = useState(false);
+  const [ollamaCliInstalled, setOllamaCliInstalled] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const [wList, oList, snap] = await Promise.all([
+      const [wList, oList, snap, ob] = await Promise.all([
         invoke<WhisperModel[]>("models_list"),
         invoke<OllamaModel[]>("ollama_models_list"),
         invoke<Snapshot>("settings_get"),
+        invoke<OnboardingStatusSubset>("onboarding_status"),
       ]);
       setWhisperModels(wList);
       setOllamaModels(oList);
       setAiOn(snap.ai_cleanup_enabled);
+      setOllamaAppInstalled(ob.ollama_app_installed);
+      setOllamaCliInstalled(ob.ollama_cli_installed);
     } catch (e) {
       setErr(String(e));
     }
@@ -95,6 +109,19 @@ export function ModelsPane() {
     try {
       await invoke("ollama_model_set", { tag });
       void invoke("ollama_pull_active");
+      refresh();
+    } catch (e) {
+      setErr(String(e));
+    }
+  };
+
+  /** Pause the currently-in-flight Ollama pull. Ollama's server keeps the
+   *  blob layers it already downloaded, so clicking Pull again resumes
+   *  from where this paused. The button below this state lives on the
+   *  pulling row itself, so the Pull→Pause→Pull cycle stays on one row. */
+  const cancelOllamaPull = async () => {
+    try {
+      await invoke("ollama_cancel_pull");
       refresh();
     } catch (e) {
       setErr(String(e));
@@ -178,7 +205,30 @@ export function ModelsPane() {
         </div>
       )}
 
-      {/* ── Ollama (AI / skills) ── */}
+      {/* ── Ollama install (top-level section) ─────────────────────────
+          What it is, whether it's installed (pills), how to verify or
+          install. Separated from "AI model" below because the user's
+          mental model is two distinct pieces: "do I have Ollama itself?"
+          and "which model do I want it to run?". Treating them as one
+          section blurred the relationship. */}
+      <h1 style={{ marginTop: "2rem" }}>Ollama install</h1>
+      <p className="subtle">
+        Ollama is the local AI server that runs the language model. Soll
+        talks to it on <code>localhost:11434</code>. Nothing leaves your
+        Mac. You only need to install it once.
+      </p>
+      <div className="pane-section">
+        <OllamaInstallStatus
+          appInstalled={ollamaAppInstalled}
+          cliInstalled={ollamaCliInstalled}
+        />
+      </div>
+
+      {/* ── AI model (top-level section) ───────────────────────────────
+          The language model Ollama runs. AI-cleanup master toggle moves
+          here because the toggle controls whether transcripts go
+          through the model at all — that's a "model" question, not an
+          "install" question. */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "2rem" }}>
         <h1 style={{ margin: 0 }}>AI model</h1>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
@@ -194,9 +244,11 @@ export function ModelsPane() {
         </div>
       </div>
       <p className="subtle">
-        Used for AI cleanup and skills. Click <strong>Pull</strong> to download
-        a model — first pull is 1.5–5 GB and runs against Ollama in the
-        background. Once pulled, click the row to make it the active model.
+        The language model Ollama runs to clean up your transcripts and
+        power voice-triggered Skills. Click <strong>Pull</strong> to
+        download — first pull is 1.5–5 GB and runs against Ollama in the
+        background. Once pulled, click the row to make it the active
+        model.
       </p>
 
       <div className="pane-section">
@@ -225,7 +277,17 @@ export function ModelsPane() {
                   </span>
                 </div>
                 {isPulling ? (
-                  <span className="row-hint subtle">Pulling… {m.pull_pct}%</span>
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void cancelOllamaPull();
+                    }}
+                    title="Pause this download. Ollama keeps already-downloaded layers; clicking Pull again resumes from here."
+                  >
+                    Pause ({m.pull_pct}%)
+                  </button>
                 ) : m.is_active ? (
                   <span className="badge">active</span>
                 ) : m.is_pulled ? (

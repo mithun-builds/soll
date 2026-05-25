@@ -102,6 +102,296 @@
   width: 100%;
 }
 
+/* ── Conversational step layout (new in v0.4.3) ──────────────────────────
+   Unified skeleton every step renders into. Replaces the older per-step
+   ad-hoc layouts with a consistent vertical rhythm:
+       big icon → title → subtitle → optional content → primary CTA → links.
+*/
+
+.cs-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  /* Tightened from 16px to 12px so the icon → title → subtitle →
+     primary CTA stack fits more comfortably in a 480×600 window. */
+  gap: 12px;
+  width: 100%;
+  /* Was 460px; narrower content column lets the window itself be
+     480px instead of 560px without text feeling cramped. */
+  max-width: 420px;
+  padding: 4px 0;
+}
+
+/* Optional header slot above the icon — used by Step 4 to show the
+   two-sub-step progress panel ("1. Install Ollama / 2. Pick model")
+   at all times, no matter which sub-state the step is in. */
+.cs-header {
+  width: 100%;
+  max-width: 460px;
+  margin-bottom: 4px;
+}
+
+.cs-icon-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Trimmed from 72 → 56. The icon was anchoring a taller vertical
+     rhythm than the surrounding content needed; with the smaller circle
+     plus tightened gap above, the whole step fits comfortably in a
+     480×600 window without scrolling. */
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: rgba(253, 224, 71, 0.08);
+  color: var(--accent, #fde047);
+  margin-bottom: 0;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+/* ── Ollama sub-step progress panel ─────────────────────────────────────
+   The outer wrapper provides the rounded-rectangle background. Inside
+   it: a two-column grid of substep rows on top, and (when the user
+   clicks "▸ verify") a full-width info-box of verify tips below,
+   separated by a divider. */
+.ob-substeps-panel {
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+/* Two-column row of substeps. Each column is one sub-step: "Install
+   Ollama" (left) and "Pick an AI model" (right). `align-items: center`
+   keeps both columns' marks vertically centered against their content
+   — both columns are now equal in height (2 lines each) since the
+   verify-tips moved out of the left column into the full-width box. */
+.ob-substeps {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: center;
+  gap: 8px 14px;
+}
+.ob-substeps li {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  min-width: 0; /* let column contents wrap rather than overflow */
+}
+
+/* Full-width verify info-box revealed below the substep grid when the
+   user clicks the "▸ verify" link. Spans both columns rather than
+   squeezing into sub-step 1. Divider above visually separates it from
+   the substep rows. */
+.ob-substeps-verify {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* (Older `.ob-substep--two-row` grid + `.ob-substep-header`/`-details`
+    rules were removed when the verify-tips moved into the full-width
+    box below the substep grid. Both substep rows are now plain
+    title-on-top, detail-on-bottom blocks rendered inside the same
+    `.ob-substep-text` container.) */
+/* Title row inside sub-step 1's header — title left, "▸ verify" trigger
+   right, both on a single line. The trigger is a subtle text-link, not
+   competing visually with the substep title. */
+.ob-substep-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ob-substep-verify-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-size: 11px;
+  color: #9ca3af;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.ob-substep-verify-link:hover {
+  color: #e5e7eb;
+}
+.ob-substep-mark {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.ob-substep--done .ob-substep-mark {
+  background: #4ade80; /* green-400 */
+  color: #052e16; /* green-950 — high contrast for the ✓ */
+}
+.ob-substep--todo .ob-substep-mark {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-muted, #9ca3af);
+}
+.ob-substep-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.ob-substep-title {
+  color: var(--text, #e5e7eb);
+  font-size: 13px;
+  font-weight: 600;
+}
+.ob-substep--done .ob-substep-title {
+  /* Slightly faded once done, so the still-pending row stands out.
+     We don't strike the title through — the green ✓ mark already
+     communicates "done" and adding line-through was visually noisy. */
+  color: var(--text-muted, #9ca3af);
+}
+.ob-substep-detail {
+  color: var(--text-muted, #9ca3af);
+  font-size: 12px;
+}
+
+/* Install pills + verify-tips styles moved to
+   `src/components/OllamaInstallStatus.css`, which is imported by the
+   shared `OllamaInstallStatus` component used in both the Setup Guide
+   and Settings → Models pane. */
+.cs-icon-wrap .ob-step-svg {
+  width: 30px;
+  height: 30px;
+}
+.cs-icon-wrap .ob-step-icon-img {
+  width: 34px;
+  height: 34px;
+}
+/* Done-state: green tint instead of yellow. Signals "this step is complete"
+   without competing with the primary CTA. */
+.cs-step--success .cs-icon-wrap {
+  background: rgba(74, 222, 128, 0.12);
+  color: #4ade80;
+}
+
+.cs-title {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+  margin: 0;
+  color: var(--fg, #e5e7eb);
+}
+
+.cs-subtitle {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--fg-subtle, #9ca3af);
+  max-width: 420px;
+  margin: 0;
+}
+.cs-subtitle strong {
+  color: var(--fg, #e5e7eb);
+  font-weight: 600;
+}
+.cs-subtitle code,
+.cs-subtitle kbd {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--fg, #e5e7eb);
+}
+
+/* Slot for picker UIs, the dictation textarea, anything that goes
+   between the subtitle and the primary CTA. */
+.cs-content {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+/* The ONE primary action — visually loud, only one per step. */
+.cs-primary-slot {
+  margin-top: 8px;
+}
+
+.cs-primary-btn {
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  padding: 12px 28px;
+  min-width: 240px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--accent, #fde047);
+  color: #111;
+  cursor: pointer;
+  transition: transform 0.06s ease, filter 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.04), 0 4px 14px rgba(253, 224, 71, 0.18);
+}
+.cs-primary-btn:hover:not(:disabled) {
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.04), 0 6px 18px rgba(253, 224, 71, 0.22);
+}
+.cs-primary-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+.cs-primary-btn:disabled {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--fg-subtle, #9ca3af);
+  cursor: not-allowed;
+  box-shadow: none;
+}
+.cs-primary-btn--danger {
+  background: rgba(239, 68, 68, 0.18);
+  color: #fca5a5;
+  box-shadow: none;
+}
+.cs-primary-btn--danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.28);
+  color: #fecaca;
+  filter: none;
+}
+
+/* Secondary actions — small link-style buttons, never compete with the
+   primary CTA. Stack vertically when there's more than one. */
+.cs-secondary-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.cs-secondary-link {
+  font: inherit;
+  font-size: 12.5px;
+  background: none;
+  border: 0;
+  color: var(--fg-subtle, #9ca3af);
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 6px;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.cs-secondary-link:hover {
+  color: var(--fg, #e5e7eb);
+  background: rgba(255, 255, 255, 0.04);
+}
+
 @keyframes slide-from-right {
   from { opacity: 0; transform: translateX(32px); }
   to   { opacity: 1; transform: translateX(0); }
@@ -345,6 +635,16 @@
   margin: 0 auto;
 }
 
+/* `--compact` variant used by Step 1's Whisper picker after the
+   redesign — 4 cards in a single horizontal row of slim chips with
+   only name + size + toggle. Saves ~80px of vertical real estate
+   versus the older 2×2 grid that had per-card status hint lines. */
+.ob-model-picker--compact {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  max-width: 100%;
+  gap: 6px;
+}
+
 .ob-model-card {
   display: flex;
   align-items: center;
@@ -359,6 +659,19 @@
   cursor: pointer;
   text-align: left;
   transition: background 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+
+/* In the compact variant, cards stack vertically (name above, toggle
+   below) so they fit a quarter of the row width without truncating
+   the model name. Padding tightened too. */
+.ob-model-picker--compact .ob-model-card {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 8px 10px;
+}
+.ob-model-picker--compact .ob-model-card-toggle {
+  align-self: flex-end;
 }
 
 .ob-model-card:hover:not(:disabled) {
@@ -466,69 +779,97 @@
   gap: 10px;
 }
 
-/* Always-visible explainer above the install-diagnostics checklist —
-   answers the "what even is Ollama?" question for first-time users
-   without making them click a dropdown. */
-.ob-ollama-explainer {
-  margin: 0;
-  padding: 0;
+/* Unified Ollama status panel — single block of conversational copy
+   that explains, in plain English, which install shape(s) the user has
+   and what to do next. Replaces the older tick-mark diagnostics list
+   plus separate explainer + collapsible install-instructions dropdown. */
+.ob-ollama-status {
+  width: 100%;
   max-width: 480px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
   font-size: 13px;
   line-height: 1.5;
   color: var(--text-muted, #9ca3af);
-  text-align: center;
+  text-align: left;
 }
-.ob-ollama-explainer strong {
+.ob-ollama-status p {
+  margin: 0 0 8px 0;
+}
+.ob-ollama-status p:last-child {
+  margin-bottom: 0;
+}
+.ob-ollama-status strong {
   color: var(--text, #e5e7eb);
 }
-.ob-ollama-explainer code {
+.ob-ollama-status code {
   font-size: 12px;
   padding: 1px 4px;
   border-radius: 3px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.08);
+}
+.ob-ollama-status a {
+  color: #fbbf24; /* amber — matches the Soll accent */
+  text-decoration: none;
+}
+.ob-ollama-status a:hover {
+  text-decoration: underline;
+}
+.ob-ollama-status--installed {
+  border-left: 3px solid #4ade80; /* green for "ready, just needs a click" */
+}
+.ob-ollama-status--missing {
+  border-left: 3px solid #fbbf24; /* amber — action required, not an error */
 }
 
-/* Ollama install diagnostics — three-row checklist surfaced on Step 4
-   when Ollama isn't running, so the user can see at a glance which
-   install pieces are present and which are missing. */
-.ob-install-diag {
-  list-style: none;
-  padding: 8px 12px;
-  margin: 0;
-  background: rgba(255, 255, 255, 0.04);
-  border-radius: 8px;
+/* The two install-action cards (cask vs formula) shown when Ollama isn't
+   installed. Larger tap targets than the inline buttons elsewhere
+   because they're the primary action on the step. */
+.ob-ollama-install-actions {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
+  margin: 10px 0;
+}
+.ob-ollama-install-btn {
+  display: block;
   width: 100%;
-  max-width: 420px;
-  font-size: 13px;
-  line-height: 1.4;
-}
-.ob-install-diag li {
-  display: grid;
-  grid-template-columns: 16px auto 1fr;
-  align-items: baseline;
-  column-gap: 8px;
-}
-.ob-install-diag-icon {
-  font-weight: 700;
-  font-size: 14px;
-  text-align: center;
-}
-.ob-install-diag-ok .ob-install-diag-icon {
-  color: #4ade80; /* green-400 */
-}
-.ob-install-diag-missing .ob-install-diag-icon {
-  color: #f87171; /* red-400 */
-}
-.ob-install-diag-label {
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
   color: var(--text, #e5e7eb);
+  cursor: pointer;
+  font: inherit;
+  transition: background 0.12s ease, border-color 0.12s ease;
 }
-.ob-install-diag-hint {
-  grid-column: 3 / 4;
+.ob-ollama-install-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.ob-ollama-install-btn-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ob-ollama-install-btn-rec {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(251, 191, 36, 0.15);
+  color: #fbbf24;
+}
+.ob-ollama-install-btn-sub {
   color: var(--text-muted, #9ca3af);
   font-size: 12px;
+  line-height: 1.4;
 }
 
 /* ── Dictation test (step 5) ────────────────────────────────────────────── */
@@ -606,6 +947,37 @@
 .ob-dictation-blockers li {
   color: var(--fg-subtle);
   line-height: 1.55;
+}
+
+/* Compact blockers panel used by Step 5 when the user lands on the
+   dictation step with prerequisites still missing. Drops the disabled
+   textarea entirely (it'd just sit there empty) and surfaces the
+   blocker list as the primary visual. */
+.ob-blocker-compact {
+  background: rgba(239,68,68,0.08);
+  border: 1px solid rgba(239,68,68,0.25);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  color: var(--fg);
+  text-align: left;
+  width: 100%;
+  max-width: 380px;
+}
+.ob-blocker-compact strong {
+  color: #f87171;
+  font-weight: 600;
+  display: block;
+  margin-bottom: 5px;
+}
+.ob-blocker-compact ul {
+  margin: 0;
+  padding-left: 18px;
+  list-style: disc;
+}
+.ob-blocker-compact li {
+  color: var(--fg-subtle);
+  line-height: 1.6;
 }
 
 .ob-dictation-hint {
