@@ -88,6 +88,7 @@ pub fn run() {
             commands::ollama_models_list,
             commands::ollama_model_set,
             commands::ollama_pull_active,
+            commands::ollama_cancel_pull,
             commands::ollama_delete_active,
             commands::open_settings_window_cmd,
             commands::open_url,
@@ -105,6 +106,7 @@ pub fn run() {
             onboarding::request_accessibility_permission,
             onboarding::reset_accessibility_grant,
             onboarding::open_ollama,
+            onboarding::install_ollama_via_terminal,
         ])
         .plugin(
             tauri_plugin_log::Builder::new()

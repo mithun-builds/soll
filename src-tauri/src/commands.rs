@@ -425,6 +425,10 @@ pub fn ollama_model_set(tag: String, state: State<'_, Arc<AppState>>) -> Result<
 pub fn ollama_pull_active(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let tag = state.ollama.active_model();
     let ollama = state.ollama.clone();
+    // A stale cancel from the user clicking "pause" on a previous pull
+    // could fire the moment we start the next pull. Reset before seeding
+    // progress so the new task starts with a clean flag.
+    ollama.reset_pull_cancel();
     // Seed progress at 0 immediately so the UI flips to "Pulling… 0%"
     // on the very next poll, instead of waiting for the first chunk.
     ollama.set_pull_progress(tag.clone(), 0);
@@ -435,6 +439,17 @@ pub fn ollama_pull_active(state: State<'_, Arc<AppState>>) -> Result<(), String>
         ollama.clear_pull();
     });
     Ok(())
+}
+
+/// Request cancellation of the in-flight Ollama pull (if any). The
+/// streaming task checks `pull_cancel_requested()` between chunks; on
+/// cancel it drops the response and exits cleanly. Ollama keeps the
+/// already-downloaded blob layers in its server-side cache, so the next
+/// `ollama_pull_active` for the same tag resumes from where this one
+/// stopped — no progress is lost.
+#[tauri::command]
+pub fn ollama_cancel_pull(state: State<'_, Arc<AppState>>) {
+    state.ollama.request_pull_cancel();
 }
 
 /// Drive a single streaming `/api/pull`, updating `ollama.pull_status()`
@@ -469,6 +484,16 @@ async fn stream_pull(ollama: &crate::cleanup::OllamaClient, tag: &str) -> Result
         .await
         .map_err(|e| format!("read chunk: {e}"))?
     {
+        // Honour a cancel request between chunks. Latency is bounded by
+        // one chunk (typically <64 KB → <100 ms on a hot connection).
+        // Dropping `response` closes the TCP connection; Ollama keeps
+        // every blob layer it already wrote, so resuming the same pull
+        // later picks up from there.
+        if ollama.pull_cancel_requested() {
+            log::info!("ollama pull {tag} cancelled by user (partial layers kept server-side)");
+            drop(response);
+            return Ok(());
+        }
         buf.push_str(&String::from_utf8_lossy(&chunk));
         while let Some(nl) = buf.find('\n') {
             let line: String = buf.drain(..=nl).collect();

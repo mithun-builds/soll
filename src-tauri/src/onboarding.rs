@@ -166,6 +166,41 @@ fn current_signing_identifier() -> Option<&'static str> {
         .as_deref()
 }
 
+/// Launch Terminal.app and run a brew install command for Ollama, so the
+/// user can install without leaving Soll. We don't run brew as a Tauri
+/// subprocess because (a) brew might prompt for the sudo password —
+/// Terminal handles password prompts natively, and (b) the user benefits
+/// from seeing the full install output in case anything fails.
+///
+/// `shape` is `"app"` (cask, menu-bar app) or `"cli"` (formula, CLI only).
+/// After install, the next `onboarding_status` poll picks up the new
+/// install via `check_ollama_app_installed` / `check_ollama_cli_installed`.
+#[tauri::command]
+pub fn install_ollama_via_terminal(shape: String) -> Result<(), String> {
+    let cmd = match shape.as_str() {
+        "app" => "brew install --cask ollama && open -a Ollama",
+        "cli" => "brew install ollama && ollama serve",
+        other => return Err(format!("unknown install shape: {other}")),
+    };
+    // `do script` in Terminal.app opens a new window and executes the
+    // command immediately (sends Return). User watches it run; brew
+    // prompts for the sudo password natively inside Terminal if needed.
+    //
+    // Embedded command is double-quoted in AppleScript; brew commands
+    // never contain " so simple substitution is safe here.
+    let applescript = format!(
+        r#"tell application "Terminal"
+            activate
+            do script "{cmd}"
+        end tell"#
+    );
+    std::process::Command::new("/usr/bin/osascript")
+        .args(["-e", &applescript])
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("launch Terminal: {e}"))
+}
+
 /// Wipe the Accessibility TCC grant for `com.soll.app`. The next call to
 /// the macOS accessibility APIs will re-prompt, giving the user a fresh
 /// path to re-grant against the current binary's signature.

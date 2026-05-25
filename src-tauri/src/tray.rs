@@ -256,18 +256,22 @@ pub fn open_settings_window(app: &AppHandle) {
 
 pub fn open_onboarding_window(app: &AppHandle) {
     activate_app();
-    let (cx, cy) = compute_center_position(app, 560.0, 680.0);
+    // 480×600 is comfortably enough for the densest step (Step 4 with
+    // the two-row Ollama sub-step panel above the main conversational
+    // content). Was 560×680 which felt cavernous on a 13" laptop.
+    let (cx, cy) = compute_center_position(app, 480.0, 600.0);
 
     if let Some(existing) = app.get_webview_window("onboarding") {
         let _ = existing.set_position(tauri::LogicalPosition::new(cx, cy));
         let _ = existing.show();
         let _ = existing.set_focus();
+        let _ = existing.center();
         return;
     }
     let url = WebviewUrl::App("index.html?view=onboarding".into());
     match WebviewWindowBuilder::new(app, "onboarding", url)
         .title("Soll — Setup Guide")
-        .inner_size(560.0, 680.0)
+        .inner_size(480.0, 600.0)
         .min_inner_size(420.0, 500.0)
         .position(cx, cy)
         .visible(false)
@@ -281,6 +285,7 @@ pub fn open_onboarding_window(app: &AppHandle) {
             // landed the window in the bottom-right of the secondary monitor.
             let _ = window.show();
             let _ = window.set_focus();
+            let _ = window.center();
             log::info!("opened onboarding window");
         }
         Err(e) => log::error!("open onboarding window: {e:?}"),
@@ -414,9 +419,21 @@ fn open_window(app: &AppHandle, label: &str, title: &str, w: f64, h: f64) {
     let (cx, cy) = compute_center_position(app, w, h);
 
     if let Some(existing) = app.get_webview_window(label) {
+        // Re-centre on the cursor's current monitor every time. We do
+        // this two ways for reliability:
+        //   1. set_position(compute_center_position(...)) — our manual
+        //      math, runs before show so macOS doesn't briefly paint
+        //      the window at its prior location.
+        //   2. window.center() AFTER show — Tauri's own primitive,
+        //      which uses the underlying NSWindow's screen detection
+        //      and corrects for any race between hidden-window
+        //      coordinates and the visible-window event loop.
+        // Either alone occasionally landed the window off-centre on
+        // multi-monitor / mixed-DPI setups; both together are robust.
         let _ = existing.set_position(tauri::LogicalPosition::new(cx, cy));
         let _ = existing.show();
         let _ = existing.set_focus();
+        let _ = existing.center();
         return;
     }
     let url = WebviewUrl::App(format!("index.html?view={label}").into());
@@ -432,6 +449,11 @@ fn open_window(app: &AppHandle, label: &str, title: &str, w: f64, h: f64) {
         Ok(window) => {
             let _ = window.show();
             let _ = window.set_focus();
+            // Belt-and-suspenders centering for the first open too —
+            // some macOS configurations ignore the build-time
+            // .position() call when the screen has changed since the
+            // app launched (DPI flip, monitor unplugged, etc.).
+            let _ = window.center();
             log::info!("opened {label} window");
         }
         Err(e) => log::error!("open {label} window: {e:?}"),

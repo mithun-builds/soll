@@ -3,6 +3,7 @@ use log::{info, warn};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -214,6 +215,12 @@ pub struct OllamaClient {
     /// `Some` while a pull is in flight; `None` otherwise. Updated by the
     /// streaming pull task as it consumes `/api/pull` chunks.
     pull: Arc<RwLock<Option<PullStatus>>>,
+    /// Set by the frontend to ask the in-flight pull task to bail. The
+    /// task checks this between chunks; on `true` it drops the response
+    /// and returns. Ollama keeps any already-downloaded blob layers in
+    /// its server-side cache, so re-running `pull` later resumes — we
+    /// don't need to track partial bytes on our side.
+    pull_cancel: Arc<AtomicBool>,
 }
 
 impl OllamaClient {
@@ -232,6 +239,7 @@ impl OllamaClient {
             state: Arc::new(RwLock::new(CleanupState::Unknown)),
             model: Arc::new(RwLock::new(OllamaModel::DEFAULT.tag().to_string())),
             pull: Arc::new(RwLock::new(None)),
+            pull_cancel: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -266,6 +274,25 @@ impl OllamaClient {
     /// Mark the pull as no longer in flight (success or terminal error).
     pub(crate) fn clear_pull(&self) {
         *self.pull.write() = None;
+    }
+
+    /// Ask the in-flight streaming pull task to bail at its next chunk
+    /// boundary. Idempotent — safe to call when nothing's pulling.
+    pub(crate) fn request_pull_cancel(&self) {
+        self.pull_cancel.store(true, Ordering::SeqCst);
+    }
+
+    /// Reset the cancel flag — called by `ollama_pull_active` at the
+    /// start of every new pull so a stale cancel request from a previous
+    /// pull doesn't immediately abort the new one.
+    pub(crate) fn reset_pull_cancel(&self) {
+        self.pull_cancel.store(false, Ordering::SeqCst);
+    }
+
+    /// True if the in-flight pull (if any) has been asked to cancel.
+    /// Checked by the streaming pull loop between chunks.
+    pub(crate) fn pull_cancel_requested(&self) -> bool {
+        self.pull_cancel.load(Ordering::SeqCst)
     }
 
     /// Query Ollama's `/api/tags` and return the set of model tags that are
