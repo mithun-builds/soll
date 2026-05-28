@@ -815,7 +815,15 @@ function Step3Accessibility({ status, onContinue }: StepProps) {
     );
   }
 
-  // Normal pending path
+  // Normal pending path.
+  //
+  // "Reset & re-grant" is always shown as a secondary action below the
+  // restart link — without it being primary noise. Ad-hoc-signed builds
+  // get a fresh CDHash on every release, so a brew upgrade preserves
+  // the System Settings toggle visually but breaks the TCC entitlement
+  // for the new binary. If the user has flipped the toggle on and
+  // restarted Soll and *still* sees "pending" here, the reset gets
+  // them out of that stuck state.
   return (
     <ConversationalStep
       icon={ICONS.accessibility}
@@ -832,9 +840,17 @@ function Step3Accessibility({ status, onContinue }: StepProps) {
         </PrimaryButton>
       }
       secondary={
-        <SecondaryLink onClick={() => invoke("restart_app")}>
-          I&apos;ve granted it — restart Soll to apply
-        </SecondaryLink>
+        <>
+          <SecondaryLink onClick={() => invoke("restart_app")}>
+            I&apos;ve granted it — restart Soll to apply
+          </SecondaryLink>
+          <SecondaryLink onClick={async () => {
+            await invoke("reset_accessibility_grant");
+            await invoke("open_privacy_settings", { section: "Privacy_Accessibility" });
+          }}>
+            Still stuck after restart? Reset &amp; re-grant
+          </SecondaryLink>
+        </>
       }
     />
   );

@@ -99,14 +99,27 @@ jobs:
           draft: false
           generate_release_notes: true
           body: |
-            ## Install via Homebrew (recommended)
+            ## Upgrading from a previous version
+
+            If you already have Soll installed via Homebrew:
+
+            ```bash
+            brew update && brew upgrade --cask soll
+            ```
+
+            Safe to run while Soll is open — Homebrew quits the running app, swaps in the new `.app`, and you can relaunch from the menu bar or Spotlight.
+
+            > **Heads up after upgrade:** ad-hoc-signed builds use a fresh code signature on each release, which macOS treats as a new identity for TCC permission purposes. If **Microphone** or **Accessibility** show as "pending" in the Setup Guide even though System Settings shows them granted, open Setup Guide → **Accessibility** step → **Reset & re-grant**, then flip the System Settings toggle on once more and click **Restart Soll to apply**.
+
+            ## Fresh install via Homebrew
 
             ```bash
             brew tap mithun-builds/soll
             brew install --cask soll
             ```
 
-            ## Manual install
+            ## Manual install (DMG)
+
             1. Download the DMG for your Mac:
                - **Apple Silicon** (M1/M2/M3/M4) → `Soll-*-apple-silicon.dmg`
                - **Intel** → `Soll-*-intel.dmg`
@@ -114,9 +127,10 @@ jobs:
             3. **System Settings → Privacy & Security** → scroll down → **Open Anyway**
 
             ## Requirements
+
             - macOS 13 Ventura or later
             - Microphone + Accessibility permissions (prompted on first use)
-            - [Ollama](https://ollama.com) *(optional — for AI cleanup and Skills)*
+            - [Ollama](https://ollama.com) *(optional — for AI cleanup and Skills; Soll's Setup Guide can install it for you)*
           files: |
             ${{ steps.dmgs.outputs.arm_dmg }}
             ${{ steps.dmgs.outputs.x86_dmg }}

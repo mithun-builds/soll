@@ -28,11 +28,13 @@ type Snapshot = {
 };
 
 /// Subset of OnboardingStatus we actually need in the Settings pane —
-/// just whether each Ollama install shape is on disk, so we can render
-/// the same OllamaInstallStatus pills that Step 4 shows.
+/// Ollama install detection (so we can render the same install pills
+/// that Step 4 shows) plus the global Whisper download percentage so
+/// downloading rows can show live progress in the Pull/Download button.
 type OnboardingStatusSubset = {
   ollama_app_installed: boolean;
   ollama_cli_installed: boolean;
+  model_download_pct: number | null;
 };
 
 export function ModelsPane() {
@@ -41,6 +43,7 @@ export function ModelsPane() {
   const [aiOn, setAiOn] = useState(true);
   const [ollamaAppInstalled, setOllamaAppInstalled] = useState(false);
   const [ollamaCliInstalled, setOllamaCliInstalled] = useState(false);
+  const [whisperPct, setWhisperPct] = useState<number | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -54,6 +57,7 @@ export function ModelsPane() {
       setWhisperModels(wList);
       setOllamaModels(oList);
       setAiOn(snap.ai_cleanup_enabled);
+      setWhisperPct(ob.model_download_pct);
       setOllamaAppInstalled(ob.ollama_app_installed);
       setOllamaCliInstalled(ob.ollama_cli_installed);
     } catch (e) {
@@ -197,7 +201,9 @@ export function ModelsPane() {
                   disabled={m.is_downloading}
                   onClick={() => downloadWhisper(m.id)}
                 >
-                  {m.is_downloading ? "Downloading…" : "Download"}
+                  {m.is_downloading
+                    ? (whisperPct != null ? `Downloading ${whisperPct}%` : "Downloading…")
+                    : "Download"}
                 </button>
               </li>
             ))}
