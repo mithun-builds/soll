@@ -286,25 +286,113 @@ pub fn request_mic_permission() {
     }
 }
 
-/// Open System Settings → Privacy & Security → Accessibility.
+/// Trigger the macOS Accessibility-permission flow and open the System
+/// Settings pane.
 ///
-/// Earlier this called `AXIsProcessTrustedWithOptions(prompt: true)` to surface
-/// the macOS "Soll wants to control this computer" sheet. The side effect was
-/// nasty: that call also refreshes the running process's trust cache, so if
-/// any prior build of Soll had been granted, the next poll would flip the
-/// step to "Done" instantly — the progress bar moved without the user
-/// actually doing anything in Settings. Bypassing the prompt entirely keeps
-/// the step's "Done" state honest: it only goes green after the user
-/// explicitly toggles Soll on in Settings *and* restarts (because
-/// AXIsProcessTrusted is cached for the process lifetime).
+/// `AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: YES})` is
+/// the *only* API call that **adds Soll to the System Settings list of
+/// apps requesting accessibility**. Without it, the list stays empty for
+/// Soll and the user has nothing to toggle — exactly the "Soll not in
+/// the list" bug seen by every fresh install in v0.4.5 and earlier.
+///
+/// An earlier revision of this function removed the call out of concern
+/// that it would refresh the running process's trust cache and flip the
+/// step to "Done" without the user explicitly doing anything in
+/// Settings. We guard against that by only calling it when the process
+/// isn't currently trusted: if it already is, we skip the prompt and
+/// just open Settings so the user can manage the existing grant.
 #[tauri::command]
 pub fn request_accessibility_permission() {
     #[cfg(target_os = "macos")]
     {
+        if !check_accessibility() {
+            unsafe { register_in_accessibility_list_with_prompt(); }
+        }
         let _ = std::process::Command::new("open")
             .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
             .spawn();
     }
+}
+
+/// Call `AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: YES})`
+/// via raw CoreFoundation + ApplicationServices FFI. macOS does two things
+/// in response:
+///   1. Adds this process's bundle to the System Settings →
+///      Privacy & Security → Accessibility list (if not already there).
+///   2. Surfaces a sheet asking the user to grant access; clicking
+///      "Open System Settings" in the sheet routes them to the right pane.
+///
+/// We intentionally avoid pulling in a new crate (`core-foundation`,
+/// `objc2-application-services`, etc.) for a single one-shot call —
+/// inline FFI is clearer and keeps the dependency graph small.
+#[cfg(target_os = "macos")]
+unsafe fn register_in_accessibility_list_with_prompt() {
+    use std::ffi::c_void;
+    use std::ptr;
+
+    type CFTypeRef = *const c_void;
+
+    // CoreFoundation primitives. `kCFTypeDictionaryKeyCallBacks` /
+    // `kCFTypeDictionaryValueCallBacks` are the standard retain/release
+    // callbacks for CFType keys and values — what we want for a dict
+    // whose key is a CFString and whose value is a CFBoolean.
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        static kCFBooleanTrue: CFTypeRef;
+        static kCFTypeDictionaryKeyCallBacks: c_void;
+        static kCFTypeDictionaryValueCallBacks: c_void;
+        fn CFStringCreateWithCString(
+            alloc: CFTypeRef,
+            cstr: *const i8,
+            encoding: u32,
+        ) -> CFTypeRef;
+        fn CFDictionaryCreate(
+            alloc: CFTypeRef,
+            keys: *const CFTypeRef,
+            values: *const CFTypeRef,
+            num_values: i64,
+            key_callbacks: *const c_void,
+            value_callbacks: *const c_void,
+        ) -> CFTypeRef;
+        fn CFRelease(cf: CFTypeRef);
+    }
+
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXIsProcessTrustedWithOptions(options: CFTypeRef) -> u8;
+    }
+
+    // The well-known string key "AXTrustedCheckOptionPrompt" — telling
+    // the AX API to show the user the system prompt.
+    let key = CFStringCreateWithCString(
+        ptr::null(),
+        b"AXTrustedCheckOptionPrompt\0".as_ptr() as *const i8,
+        0x08000100, // kCFStringEncodingUTF8
+    );
+    if key.is_null() {
+        return;
+    }
+
+    let keys = [key];
+    let values = [kCFBooleanTrue];
+    let dict = CFDictionaryCreate(
+        ptr::null(),
+        keys.as_ptr(),
+        values.as_ptr(),
+        1,
+        &kCFTypeDictionaryKeyCallBacks,
+        &kCFTypeDictionaryValueCallBacks,
+    );
+
+    if !dict.is_null() {
+        // Return value is the current trust state. We ignore it — the
+        // step's next 2-second poll of `AXIsProcessTrusted()` picks up
+        // the real value, with no risk of optimistically marking the
+        // step done if macOS returns stale state.
+        let _ = AXIsProcessTrustedWithOptions(dict);
+        CFRelease(dict);
+    }
+    CFRelease(key);
 }
 
 // ── permission / connectivity checks ──────────────────────────────────────
