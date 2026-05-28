@@ -80,7 +80,7 @@ Ollama and its models are independent — Soll never installs them — so they a
 
 ## Before you start
 
-You need four things installed. Click each link for the official install page:
+You'll need these tools installed. Click each link for the official install page:
 
 | Tool | What it's for | How to install |
 |------|--------------|----------------|
@@ -90,11 +90,14 @@ You need four things installed. Click each link for the official install page:
 | **pnpm** | Node package manager | After Node: run `npm install -g pnpm` |
 | **cmake** | Required by the audio engine | After Homebrew: run `brew install cmake` |
 
-**Optional but recommended:**
+**Optional but recommended — Ollama (for AI cleanup + Skills):**
 
-| Tool | What it's for | How to install |
-|------|--------------|----------------|
-| **Ollama** | Powers AI cleanup and Skills | [ollama.com](https://ollama.com) — download and install, then run `ollama pull llama3.2:3b` |
+| Install shape | Command |
+|---------------|---------|
+| **Menu-bar app** *(recommended)* | `brew install --cask ollama` |
+| **CLI only** | `brew install ollama` |
+
+Soll's Setup Guide can also install Ollama for you in one click. After installing, the guide lets you pick from three models: **Gemma 2 2B** (1.6 GB · smallest), **Llama 3.2 3B** (2.0 GB · balanced), or **Qwen 2.5 7B** (4.7 GB · best for Skills).
 
 ---
 
@@ -125,11 +128,15 @@ npm install -g pnpm
 brew install cmake
 ```
 
-### Step 5 — Install Ollama and download the AI model *(optional)*
+### Step 5 — Install Ollama *(optional, but enables AI cleanup + Skills)*
 ```bash
-brew install ollama
-ollama pull llama3.2:3b
+# Recommended: the menu-bar app (auto-starts, no Terminal needed)
+brew install --cask ollama && open -a Ollama
+
+# Or the CLI only (smaller; you start the server yourself)
+brew install ollama && ollama serve
 ```
+You can also skip this — Soll's Setup Guide has a one-click "Install Ollama" action that does the same thing for you, and the picker downloads a model for you (Gemma 2 2B, Llama 3.2 3B, or Qwen 2.5 7B).
 
 ### Step 6 — Clone Soll
 ```bash

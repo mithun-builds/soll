@@ -466,9 +466,16 @@
       .container { padding: 0 20px; }
       section { padding: 72px 0; }
       .privacy-inner { grid-template-columns: 1fr; gap: 48px; }
-      /* On mobile the steps stack vertically; the desktop "same baseline"
-         alignment doesn't apply, so add explicit spacing between them. */
-      .steps { gap: 56px; }
+      /* On mobile and tablet (≤768px), force the three "Three seconds…"
+         steps into a single vertical column. The desktop grid uses
+         auto-fit with minmax(260px, 1fr) which lands on 2 columns at
+         medium widths (~600–770px), leaving step 3 alone on its own
+         row — looks awkward and isn't actually mobile-responsive.
+         Single column makes the flow obvious: 1 → 2 → 3. */
+      .steps {
+        gap: 56px;
+        grid-template-columns: 1fr;
+      }
       .steps::before { display: none; }
       /* Stack skills/phrases vertically on narrow viewports — three
          minmax(0,1fr) columns would squeeze into unreadable strips. */
