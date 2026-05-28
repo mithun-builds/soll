@@ -256,10 +256,12 @@ pub fn open_settings_window(app: &AppHandle) {
 
 pub fn open_onboarding_window(app: &AppHandle) {
     activate_app();
-    // 480×600 is comfortably enough for the densest step (Step 4 with
-    // the two-row Ollama sub-step panel above the main conversational
-    // content). Was 560×680 which felt cavernous on a 13" laptop.
-    let (cx, cy) = compute_center_position(app, 480.0, 600.0);
+    // 600×600 — wider than the earlier 480×600 so the 4-card Whisper
+    // picker on Step 1 and the 2-column Ollama sub-step panel on Step
+    // 4 both have generous horizontal padding instead of the cards
+    // wrapping their status text onto a second line. Still narrower
+    // than the original 560×680 vertical-rhythm version.
+    let (cx, cy) = compute_center_position(app, 600.0, 600.0);
 
     if let Some(existing) = app.get_webview_window("onboarding") {
         let _ = existing.set_position(tauri::LogicalPosition::new(cx, cy));
@@ -271,8 +273,8 @@ pub fn open_onboarding_window(app: &AppHandle) {
     let url = WebviewUrl::App("index.html?view=onboarding".into());
     match WebviewWindowBuilder::new(app, "onboarding", url)
         .title("Soll — Setup Guide")
-        .inner_size(480.0, 600.0)
-        .min_inner_size(420.0, 500.0)
+        .inner_size(600.0, 600.0)
+        .min_inner_size(480.0, 500.0)
         .position(cx, cy)
         .visible(false)
         .resizable(true)

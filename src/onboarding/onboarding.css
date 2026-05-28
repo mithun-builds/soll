@@ -113,13 +113,13 @@
   flex-direction: column;
   align-items: center;
   text-align: center;
-  /* Tightened from 16px to 12px so the icon → title → subtitle →
-     primary CTA stack fits more comfortably in a 480×600 window. */
   gap: 12px;
   width: 100%;
-  /* Was 460px; narrower content column lets the window itself be
-     480px instead of 560px without text feeling cramped. */
-  max-width: 420px;
+  /* Sized for the 600×600 window. Wider than the previous 420 so the
+     Step-1 Whisper picker (4 cards in a row) and the Step-4 Ollama
+     sub-step panel (2 columns) both have comfortable per-cell width
+     without the status text wrapping. */
+  max-width: 520px;
   padding: 4px 0;
 }
 
