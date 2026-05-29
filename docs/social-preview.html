@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<!--
+  Social-preview image template for Soll. GitHub wants a 1280×640 PNG
+  uploaded under Settings → Social preview. To produce it:
+    1. Open this file in Chrome/Safari.
+    2. Resize the window so the dark card fills the viewport with no
+       browser chrome visible inside it (or use DevTools' device-pixel
+       override at 1280×640).
+    3. Right-click → Save As Image, or Cmd-Shift-4 to screenshot the
+       card region.
+    4. Upload to https://github.com/mithun-builds/soll/settings →
+       Social preview → Upload an image.
+  The card itself is exactly 1280×640 — easier than fighting the
+  browser's window decoration. Just frame your screenshot to the card.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Soll — social preview (1280×640)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      background: #1a1a22;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      color: #e8e8ed;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 40px;
+    }
+    .card {
+      width: 1280px;
+      height: 640px;
+      background: #07070d;
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 80px 96px;
+      border-radius: 12px;
+    }
+    /* Subtle yellow radial glow in the top-right, echoing the
+       Soll accent without dominating the composition. */
+    .card::before {
+      content: '';
+      position: absolute;
+      top: -200px; right: -240px;
+      width: 700px; height: 700px;
+      background: radial-gradient(circle, rgba(253,224,71,0.16), rgba(253,224,71,0) 60%);
+      pointer-events: none;
+    }
+    .card::after {
+      content: '';
+      position: absolute;
+      bottom: -240px; left: -260px;
+      width: 600px; height: 600px;
+      background: radial-gradient(circle, rgba(74,222,128,0.06), rgba(74,222,128,0) 60%);
+      pointer-events: none;
+    }
+    .top {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      margin-bottom: 36px;
+      position: relative;
+      z-index: 2;
+    }
+    .logo {
+      width: 56px;
+      height: 44px;
+    }
+    .brand {
+      font-size: 32px;
+      font-weight: 800;
+      letter-spacing: -0.01em;
+      color: #fde047;
+    }
+    .tagline {
+      font-size: 88px;
+      font-weight: 900;
+      letter-spacing: -0.03em;
+      line-height: 1.02;
+      margin-bottom: 24px;
+      max-width: 950px;
+      position: relative;
+      z-index: 2;
+    }
+    .tagline .accent { color: #fde047; }
+    .sub {
+      font-size: 28px;
+      font-weight: 500;
+      color: #9191a0;
+      line-height: 1.45;
+      max-width: 880px;
+      margin-bottom: 56px;
+      position: relative;
+      z-index: 2;
+    }
+    .meta {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+      position: relative;
+      z-index: 2;
+    }
+    .chip {
+      padding: 9px 18px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.13);
+      color: #e8e8ed;
+      font-size: 19px;
+      font-weight: 500;
+    }
+    .chip.accent {
+      background: rgba(253,224,71,0.14);
+      border-color: rgba(253,224,71,0.4);
+      color: #fde047;
+      font-weight: 700;
+    }
+    /* Tiny "1280×640" caption shown below the card so you know
+       you're framing the screenshot correctly. */
+    .caption {
+      position: absolute;
+      bottom: 8px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 13px;
+      color: rgba(255,255,255,0.4);
+      font-family: 'SF Mono', Menlo, monospace;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="top">
+      <!-- Same wave logo used in docs/index.html footer. -->
+      <svg class="logo" viewBox="0 0 28 22" fill="none">
+        <rect x="0.5"  y="9"   width="2.5" height="4"  rx="1.25" fill="white" opacity="0.6"/>
+        <rect x="4"    y="7"   width="2.5" height="8"  rx="1.25" fill="white" opacity="0.7"/>
+        <rect x="7.5"  y="3.5" width="3"   height="15" rx="1.5"  fill="white"/>
+        <rect x="17.5" y="4.5" width="3"   height="13" rx="1.5"  fill="white"/>
+        <rect x="21.5" y="7"   width="2.5" height="8"  rx="1.25" fill="white" opacity="0.7"/>
+        <rect x="25"   y="9"   width="2.5" height="4"  rx="1.25" fill="white" opacity="0.6"/>
+        <rect x="11.5" y="2"   width="5"   height="2"            fill="#fde047"/>
+        <rect x="13.25" y="2"  width="1.5" height="18"           fill="#fde047"/>
+        <rect x="11.5" y="18"  width="5"   height="2"            fill="#fde047"/>
+      </svg>
+      <div class="brand">Soll</div>
+    </div>
+
+    <div class="tagline">
+      Voice-to-text<br/>for your <span class="accent">Mac</span>.
+    </div>
+
+    <div class="sub">
+      Hold ⌃⇧Space, speak, release. Your words appear wherever your cursor is —
+      in any app, instantly. Local Whisper + Ollama. No cloud, no account.
+    </div>
+
+    <div class="meta">
+      <span class="chip accent">Free &amp; Open Source</span>
+      <span class="chip">macOS 13+</span>
+      <span class="chip">Apple Silicon &amp; Intel</span>
+      <span class="chip">100% on-device</span>
+    </div>
+  </div>
+  <div class="caption">card is 1280 × 640 — frame your screenshot to its edges</div>
+</body>
+</html>

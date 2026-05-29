@@ -4,6 +4,8 @@
 
 A free, open-source alternative to [Wispr Flow](https://wisprflow.ai). Everything runs on your Mac — no cloud, no account, no subscription.
 
+**→ [Visit the website](https://mithun-builds.github.io/soll/) for a quick overview, or skip straight to [Install](#install) below.**
+
 ---
 
 ## Install
